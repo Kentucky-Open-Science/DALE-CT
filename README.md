@@ -1,4 +1,4 @@
-# Guided Chest CT
+# Guided Chest CT LeJEPA Pretraining
 
 This repository contains the training and evaluation pipeline for LeJEPA (Latent-Euclidean Joint-Embedding Predictive Architecture) vision transformers pre-trained on the CT-RATE dataset. Three model variants are provided: a pure self-supervised baseline (LeJEPA-0), a single-source auxiliary variant with TotalSegmentator supervision (LeJEPA-1S), and a dual-source variant with both TotalSegmentator and ReXGroundingCT supervision (LeJEPA-2S).
 
