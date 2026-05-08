@@ -1,0 +1,32 @@
+# =============================================================================
+# K-Nearest Neighbors Evaluation Configuration
+# =============================================================================
+# Evaluates raw representational quality using KNN retrieval on mean-pooled
+# slice embeddings. Reports Accuracy, Balanced Accuracy, and Macro F1 under
+# both 1-NN and 5-NN settings with 5-fold cross-validation.
+# Usage: python scripts/knn.py --config configs/knn_eval.yaml
+# =============================================================================
+
+datasets:
+  RAD-ChestCT:
+    labels_csv: /path/to/RAD-ChestCT/rad_labels.csv
+    volume_column: "VolumeName"          # Column containing volume identifier
+
+  CT-RATE:
+    labels_csv: /path/to/CT-RATE/valid_predicted_labels.csv
+    volume_column: "VolumeName"
+
+models:
+  # Each model key maps to embedding directories for each dataset.
+  # Add entries for each pre-trained model you want to evaluate.
+  lejepa_0:
+    RAD-ChestCT: /path/to/features/rad/lejepa_0/
+    CT-RATE: /path/to/features/ctrate/lejepa_0/valid/
+
+  lejepa_1s:
+    RAD-ChestCT: /path/to/features/rad/lejepa_1s/
+    CT-RATE: /path/to/features/ctrate/lejepa_1s/valid/
+
+  lejepa_2s:
+    RAD-ChestCT: /path/to/features/rad/lejepa_2s/
+    CT-RATE: /path/to/features/ctrate/lejepa_2s/valid/

@@ -1,0 +1,47 @@
+# =============================================================================
+# Embedding Generation Configuration
+# =============================================================================
+# Extracts slice-level embeddings from a pre-trained encoder for downstream
+# linear probing, KNN evaluation, or RAD-ChestCT transfer.
+# Usage: python scripts/ctrate_generate_embeddings.py --config configs/generate_embeddings.yaml
+# =============================================================================
+
+train:
+  model_type: Guided-Chest-CT-LeJEPA-V2  # Architecture variant
+  vit_ckpt_path: /path/to/checkpoints/lejepa_0/iter_50000/  # Path to pre-trained checkpoint
+  use_pretrained: false                  # Load from local checkpoint (not HuggingFace)
+
+dataset:
+  # Z-Score normalization parameters (must match pre-training)
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+
+# --- Data Source ---
+validation:
+  dataset_format: "webdataset"          # "webdataset" for tar shards, "npy" for .npy files
+  tar_pattern: /path/to/CT-RATE/tarfiles/*.tar  # WebDataset tar shard pattern
+  num_workers: 8
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"                 # Find body mask, take squared ROI
+  extract_patches: true                  # Extract both CLS and patch tokens
+
+crops:
+  global_crops_size: 256                 # Target resolution for ROI alignment
+
+output_folders:
+  main_output: /path/to/features/ctrate/  # Output directory for .npy embeddings
+
+# --- Required Placeholders (not used by embedding generation but required by config loader) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+lora_config:
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1

@@ -1,0 +1,92 @@
+# =============================================================================
+# LeJEPA Pre-Training Configuration — Dual-Source Auxiliary (λ_aux = 0.1)
+# =============================================================================
+# Corresponds to: Guided-Chest-CT-LeJEPA-2S
+# Usage: python train_lejepa.py --train_config_file configs/pretrain_lejepa_2s.yaml
+# =============================================================================
+
+# --- Experiment Identity ---
+wandb:
+  project: "CT-Rate-LeJEPA"
+  run_name: "LeJEPA-2S"
+  mode: "online"
+
+# --- LeJEPA Hyperparameters ---
+sigreg:
+  num_slices: 1024
+  knots: 17
+  lejepa_lambda: 0.02
+
+# --- Projector Architecture ---
+projector:
+  proj_dim: 124
+  proj_hidden_dim: 2048
+
+# --- Distributed Training ---
+distribution:
+  type: ddp
+  mixed_precision: bf16
+  downcast_bf16: 'no'
+
+# --- Training Loop ---
+train:
+  model_name: LeJEPA_2S
+  model_type: Guided-Chest-CT-LeJEPA-V2
+  batch_size_per_gpu: 64
+  max_iterations: 50000
+  gradient_checkpointing_enable: false
+  use_lora: false
+  clip_grad: 3.0
+  dataloader_type: web_ctrate
+  warmup_iterations: 5000
+  freeze_backbone_layers: 0
+  num_workers: 12
+  use_pretrained: false
+  generate_samples: true
+  lr: 3.0e-04
+  min_lr: 3.0e-05
+  weight_decay: 0.04
+  saveckp_freq: 2000
+  use_weightwatcher: false
+  num_samples_to_generate: 20
+
+# --- Multi-Crop Augmentation ---
+crops:
+  global_crops_scale: [0.6, 1.0]
+  global_crops_number: 2
+  global_crops_size: 256
+  local_crops_scale: [0.3, 0.6]
+  local_crops_number: 8
+  guidance_probability: 0.80
+  local_crops_size: 144
+  gamma_prob: 0.8
+  gamma_range: [0.9, 1.1]
+
+# --- Dataset ---
+dataset:
+  gpu_augmentations: true
+  dataset_path: /path/to/CT-RATE/training/tarfiles/
+  num_workers: 4
+  shuffle_buffer: 100
+  slab_size: 12.0
+  prefetch_factor: 2
+  rex_ratio: 0.2                       # Fraction of samples with ReX abnormality labels
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+
+# --- Auxiliary Supervision (ENABLED: Dual-Source TS + ReX) ---
+auxiliary:
+  enable: true                         # Enable auxiliary supervision
+  head_type: soft_label_supervision    # Predicts 118 TS + 14 ReX classes (dense: CLS + patch tokens)
+  aux_weight: 0.1                      # λ_aux = 0.1
+
+# --- Output Directories ---
+output_folders:
+  train_checkpoint_dir: train_checkpoints
+  model_checkpoint_dir: model_checkpoints
+  training_samples_dir: training_samples
+  training_results_dir: training_results
+  log_dir: log_files
+  main_output: outputs

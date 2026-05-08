@@ -1,0 +1,66 @@
+# =============================================================================
+# RAD-ChestCT Transfer Evaluation Configuration
+# =============================================================================
+# Evaluates a pre-trained encoder on RAD-ChestCT by mapping the 18 CT-RATE
+# classes to the 16 overlapping RAD-ChestCT classes using the best linear
+# probe configuration found during grid search.
+# Usage: python eval_rad.py --config configs/rad_transfer.yaml
+# =============================================================================
+
+data:
+  # RAD-ChestCT label CSV (16-class subset)
+  rad_test_label_path: /path/to/RAD-ChestCT/rad_labels.csv
+
+  # Directory containing pre-computed RAD-ChestCT embeddings
+  rad_test_embedding_dir: /path/to/features/rad/
+
+  # Sequence length normalization (disabled = use native slice count)
+  interpolate_slices: false
+  target_slices: 250
+
+experiment:
+  save_dir: /path/to/outputs/rad_transfer/
+  batch_size: 16
+  input_dim: 1024
+  num_classes: 18                     # Model architecture outputs 18 (CT-RATE classes)
+  pooling_mode: "embedding"
+
+  # The 18 CT-RATE classes in training order
+  ct_rate_classes:
+    - "Medical material"
+    - "Arterial wall calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Coronary artery wall calcification"
+    - "Hiatal hernia"
+    - "Lymphadenopathy"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Mosaic attenuation pattern"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+
+  # The 16 RAD-ChestCT classes (subset of CT-RATE with overlapping labels)
+  rad_chestct_classes:
+    - "Calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Hiatal hernia"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+    - "Lymphadenopathy"
+    - "Medical material"

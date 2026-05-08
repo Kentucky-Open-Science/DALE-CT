@@ -1,0 +1,93 @@
+# =============================================================================
+# LeJEPA Pre-Training Configuration — Unguided Baseline (λ_aux = 0)
+# =============================================================================
+# Corresponds to: Guided-Chest-CT-LeJEPA-0
+# Usage: python train_lejepa.py --train_config_file configs/pretrain_lejepa_0.yaml
+# =============================================================================
+
+# --- Experiment Identity ---
+wandb:
+  project: "CT-Rate-LeJEPA"          # WandB project name
+  run_name: "LeJEPA-0"               # Unique run identifier
+  mode: "online"                      # "online" | "offline" | "disabled"
+
+# --- LeJEPA Hyperparameters ---
+sigreg:
+  num_slices: 1024                    # Number of random 1D projection directions for SIGReg
+  knots: 17                           # Number of knots for the empirical CDF approximation
+  lejepa_lambda: 0.02                 # Weight of SIGReg term in total loss (λ in paper)
+
+# --- Projector Architecture ---
+projector:
+  proj_dim: 124                       # Output dimensionality of the projection head
+  proj_hidden_dim: 2048               # Hidden layer dimensionality
+
+# --- Distributed Training ---
+distribution:
+  type: ddp                           # "ddp" (DistributedDataParallel) or "fsdp"
+  mixed_precision: bf16               # "bf16" | "fp16" | "no"
+  downcast_bf16: 'no'                 # Whether to downcast model to bf16 at init
+
+# --- Training Loop ---
+train:
+  model_name: LeJEPA_0                # Name used for checkpoint directories
+  model_type: Guided-Chest-CT-LeJEPA-V2  # Architecture variant (vit_large_patch14)
+  batch_size_per_gpu: 64              # Per-GPU batch size (effective = batch_size × num_gpus)
+  max_iterations: 50000               # Total training iterations
+  gradient_checkpointing_enable: false # Enable gradient checkpointing to save VRAM
+  use_lora: false                     # Whether to apply LoRA adapters during pre-training
+  clip_grad: 3.0                      # Gradient clipping norm
+  dataloader_type: web_ctrate         # Dataloader backend (must be "web_ctrate")
+  warmup_iterations: 5000             # Linear warmup steps
+  freeze_backbone_layers: 0           # Number of ViT blocks to freeze (0 = none)
+  num_workers: 12                     # DataLoader worker processes
+  use_pretrained: false               # Load pretrained weights from HuggingFace (false = train from scratch)
+  generate_samples: true              # Save sample crop visualizations during training
+  lr: 3.0e-04                         # Peak learning rate (AdamW)
+  min_lr: 3.0e-05                     # Minimum learning rate (cosine schedule floor)
+  weight_decay: 0.04                  # AdamW weight decay
+  saveckp_freq: 2000                  # Save checkpoint every N iterations
+  use_weightwatcher: false            # Enable WeightWatcher layer analysis (optional)
+  num_samples_to_generate: 20         # Number of sample visualizations to save
+
+# --- Multi-Crop Augmentation ---
+crops:
+  global_crops_scale: [0.6, 1.0]      # Scale range for global crops (relative to image size)
+  global_crops_number: 2              # Number of global crops (V_g in paper)
+  global_crops_size: 256              # Global crop resolution (256×256)
+  local_crops_scale: [0.3, 0.6]       # Scale range for local crops
+  local_crops_number: 8               # Number of local crops (V_l in paper)
+  guidance_probability: 0.80          # Probability of centering crop on an anatomical label
+  local_crops_size: 144               # Local crop resolution (144×144)
+  gamma_prob: 0.8                     # Probability of applying gamma augmentation
+  gamma_range: [0.9, 1.1]             # Gamma value range
+
+# --- Dataset ---
+dataset:
+  gpu_augmentations: true             # Apply augmentations on GPU
+  dataset_path: /path/to/CT-RATE/training/tarfiles/  # Path to WebDataset tar shards
+  num_workers: 4                      # Dataset-level worker processes
+  shuffle_buffer: 100                 # WebDataset shuffle buffer size
+  slab_size: 12.0                     # Slab thickness in mm (dynamically maps to slices via z-spacing)
+  prefetch_factor: 2                  # DataLoader prefetch factor
+  rex_ratio: 0.2                      # Fraction of samples that include ReX abnormality labels
+  # Z-Score normalization parameters (derived from 0.5%/99.5% percentiles of foreground voxels)
+  clip_min: -997.0                    # HU clipping lower bound
+  clip_max: 888.0                     # HU clipping upper bound
+  mean_hu: -142.39                    # Foreground mean HU
+  std_hu: 360.97                      # Foreground std HU
+
+# --- Auxiliary Supervision (DISABLED for LeJEPA-0) ---
+auxiliary:
+  enable: false                       # No auxiliary supervision (λ_aux = 0)
+  head_type: soft_label_supervision   # Head architecture type
+  aux_weight: 0.1                     # λ_aux (ignored when enable=false)
+
+# --- Output Directories ---
+output_folders:
+  train_checkpoint_dir: train_checkpoints
+  model_checkpoint_dir: model_checkpoints
+  training_samples_dir: training_samples
+  training_results_dir: training_results
+  log_dir: log_files
+  main_output: outputs

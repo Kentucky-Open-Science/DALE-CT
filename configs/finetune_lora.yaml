@@ -1,0 +1,107 @@
+# =============================================================================
+# LoRA Fine-Tuning Configuration
+# =============================================================================
+# Fine-tunes a frozen LeJEPA backbone with LoRA adapters (r=8, α=16) on QKV
+# projection matrices, paired with Learned Attention Pooling.
+# Uses Binary Cross-Entropy with positive class weights to handle imbalance.
+# Usage: python train_e2e_lora.py --config configs/finetune_lora.yaml
+# =============================================================================
+
+data:
+  # CSV files mapping volume IDs to 18 binary abnormality labels
+  train_label_path: /path/to/CT-RATE/train_predicted_labels.csv
+  val_label_path: /path/to/CT-RATE/valid_predicted_labels.csv
+
+experiment:
+  seed: 42
+  epochs: 3
+  accumulation_steps: 32              # Gradient accumulation steps (effective batch = acc_steps × per_device)
+  steps_per_epoch: 375                # Estimated volumes per epoch (WebDataset has no __len__)
+  input_dim: 1024                     # Encoder embedding dimension
+  num_classes: 18                     # Number of CT-RATE abnormality classes
+  best_pooling_scheme: "learned_attention"  # Pooling scheme (from best linear probe result)
+  save_dir: /path/to/outputs/lora_finetune/
+
+  # Optimizer
+  lora_lr: 5.0e-4                     # Learning rate for LoRA adapters
+  head_lr: 1.0e-4                     # Learning rate for classification head
+  weight_decay: 0.01
+
+  # LR schedule
+  warmup_steps: 40
+  min_lr_ratio: 0.01                  # Final LR = min_lr_ratio × initial_lr
+
+  # Gradient checkpointing
+  chunk_size: 128                     # Slices per forward chunk (for memory efficiency)
+
+  # LoRA configuration
+  lora_r: 8                           # LoRA rank
+  lora_alpha: 16                      # LoRA scaling factor
+  lora_dropout: 0.1                   # LoRA dropout probability
+
+  # Validation
+  val_every_n_steps: 50               # Validate every N accumulation steps
+  val_max_batches: 200                # Cap validation to N batches
+  early_stopping_patience: 10         # Stop after N checks without AUPRC improvement
+
+  # Positive class weights for BCE loss (computed from training set prevalence)
+  # These counteract severe class imbalance in CT-RATE abnormalities
+  pos_weights: [7.1040, 2.5246, 7.8826, 12.8186, 2.9209, 5.9840, 2.8580, 4.1687, 2.8448, 1.2051, 1.7066, 2.7453, 7.2645, 11.9601, 8.4810, 4.6676, 8.9639, 11.5899]
+
+wandb:
+  project: "CT-RATE-LoRA"
+  run_name: "lora_finetune"
+  group: "e2e_finetune"
+  mode: "offline"
+
+# --- Backbone Configuration ---
+train:
+  model_type: "Guided-Chest-CT-LeJEPA-V2"  # Architecture variant
+  model_name: "e2e_lora"                    # Name for checkpoint directories
+  vit_ckpt_path: /path/to/checkpoints/lejepa_0/iter_50000/  # Path to pre-trained checkpoint
+  use_pretrained: false                     # Load from local checkpoint (not HuggingFace)
+  drop_path_rate: 0.0                      # Stochastic depth rate
+
+# --- Data Processing ---
+dataset:
+  normalization_mode: "physical"           # Divide HU by 1000, clamp to [-1, 1]
+  num_channels: 1                          # Single-channel CT input
+
+# --- DataLoader ---
+validation:
+  dataset_format: "webdataset"             # Training data format
+  train_tar_pattern: /path/to/CT-RATE/training/tarfiles/*.tar  # WebDataset tar shards
+  num_workers: 4
+
+  # Validation: .npy files from pre-processed CT-RATE validation set
+  val_dataset_format: "npy"
+  val_data_dir: /path/to/CT-RATE/valid_hu_resized/
+  val_label_csv: /path/to/CT-RATE/valid_predicted_labels.csv
+  val_max_patients: 200                    # Limit validation to N patients for speed
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"                   # Find body mask, take squared ROI
+  extract_patches: false                   # Only use CLS token (not patch tokens)
+
+crops:
+  global_crops_size: 256                   # Target resolution for ROI alignment
+
+# --- Required Placeholders (not used by LoRA training but required by config loader) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+
+output_folders:
+  main_output: /path/to/checkpoints/
+  log_dir: "logs"
+  e2e_save_dir: /path/to/checkpoints/lora_outputs/
+
+dino_head:
+  out_dim: 65536
+  norm_last_layer: true
+  hidden_dim: 2048
+  bottleneck_dim: 256
+  nlayers: 3

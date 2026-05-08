@@ -1,0 +1,172 @@
+{
+  "paige-ai/Virchow2": {
+    "model_type": "paige-ai/Virchow2",
+    "timm_arch": "hf-hub:paige-ai/Virchow2",
+    "hidden_size": 1280,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 16,
+    "patch_size": 14,
+    "mlp_ratio": 5.3375,
+    "num_register_tokens": 4,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "mlp_layer": "SwiGLUPacked",
+      "act_layer": "SiLU"
+    }
+  },
+  "MahmoodLab/UNI2-h": {
+    "model_type": "MahmoodLab/UNI2-h",
+    "timm_arch": "hf-hub:MahmoodLab/UNI2-h",
+    "hidden_size": 1536,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 24,
+    "patch_size": 14,
+    "mlp_ratio": 5.33334,
+    "num_register_tokens": 8,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "mlp_layer": "SwiGLUPacked",
+      "act_layer": "SiLU",
+      "no_embed_class": true
+    }
+  },
+  "MahmoodLab/UNI": {
+    "model_type": "MahmoodLab/UNI",
+    "timm_arch": "hf-hub:MahmoodLab/UNI",
+    "hidden_size": 1024,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "patch_size": 16,
+    "mlp_ratio": 4.0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true
+  },
+  "prov-gigapath/prov-gigapath": {
+    "model_type": "prov-gigapath/prov-gigapath",
+    "timm_arch": "hf-hub:prov-gigapath/prov-gigapath",
+    "hidden_size": 1536,
+    "num_hidden_layers": 40,
+    "num_attention_heads": 24,
+    "patch_size": 16,
+    "mlp_ratio": 5.33334,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 3
+    }
+  },
+  "bioptimus/H-optimus-0": {
+    "model_type": "bioptimus/H-optimus-0",
+    "timm_arch": "hf-hub:bioptimus/H-optimus-0",
+    "hidden_size": 1536,
+    "num_hidden_layers": 40,
+    "num_attention_heads": 24,
+    "patch_size": 14,
+    "mlp_ratio": 5.33334,
+    "num_register_tokens": 4,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "mlp_layer": "SwiGLUPacked",
+      "act_layer": "SiLU",
+      "no_embed_class": true
+    }
+  },
+  "vit_small_patch16_1ch": {
+    "model_type": "vit_small_patch16_1ch",
+    "timm_arch": "vit_small_patch16_224",
+    "hidden_size": 384,
+    "num_hidden_layers": 12,
+    "num_attention_heads": 6,
+    "patch_size": 16,
+    "mlp_ratio": 4.0,
+    "num_register_tokens": 0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 1
+    }
+  },
+  "vit_base_patch16_1ch": {
+    "model_type": "vit_base_patch16_1ch",
+    "timm_arch": "vit_base_patch16_224",
+    "hidden_size": 768,
+    "num_hidden_layers": 12,
+    "num_attention_heads": 12,
+    "patch_size": 16,
+    "mlp_ratio": 4.0,
+    "num_register_tokens": 0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 1
+    }
+  },
+  "vit_large_patch16_1ch": {
+    "model_type": "vit_large_patch16_1ch",
+    "timm_arch": "vit_large_patch16_224",
+    "hidden_size": 1024,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "patch_size": 16,
+    "mlp_ratio": 4.0,
+    "num_register_tokens": 0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 1
+    }
+  },
+  "CardViT-large-no-reg": {
+    "model_type": "CardViT-large-no-reg",
+    "timm_arch": "vit_large_patch14_dinov2",
+    "hidden_size": 1024,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "patch_size": 14,
+    "mlp_ratio": 4.0,
+    "num_register_tokens": 0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 1,
+      "img_size": 518
+    }
+  },
+  "Guided-Chest-CT-LeJEPA-V2": {
+    "model_type": "Guided-Chest-CT-LeJEPA-V2",
+    "timm_arch": "vit_large_patch14_dinov2",
+    "hidden_size": 1024,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "patch_size": 16,
+    "mlp_ratio": 4.0,
+    "num_register_tokens": 0,
+    "layer_norm_eps": 1e-6,
+    "qkv_bias": true,
+    "extra_kwargs": {
+      "in_chans": 1,
+      "img_size": 512
+    }
+  },
+  "Guided-Chest-CT-LeJEPA-V2-3D": {
+  "model_type": "Guided-Chest-CT-LeJEPA-V2-3D",
+  "timm_arch": "vit_large_patch14_dinov2",
+  "hidden_size": 1024,
+  "num_hidden_layers": 24,
+  "num_attention_heads": 16,
+  "patch_size": 16,
+  "mlp_ratio": 4.0,
+  "num_register_tokens": 0,
+  "layer_norm_eps": 1e-6,
+  "qkv_bias": true,
+  "extra_kwargs": {
+    "in_chans": 1,
+    "img_size": 512,
+    "is_3d": true,
+    "frames_per_clip": 128
+  }
+}
+}
