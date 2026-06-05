@@ -1,12 +1,18 @@
-# Guided Chest CT LeJEPA Pretraining
+# DALE-CT Pretraining
 
-This repository contains the training and evaluation pipeline for LeJEPA (Latent-Euclidean Joint-Embedding Predictive Architecture) vision transformers pre-trained on the CT-RATE dataset. Three model variants are provided: a pure self-supervised baseline (LeJEPA-0), a single-source auxiliary variant with TotalSegmentator supervision (LeJEPA-1S), and a dual-source variant with both TotalSegmentator and ReXGroundingCT supervision (LeJEPA-2S).
+This repository contains the training and evaluation pipeline for **DALE-CT** (**Depth-Aware Latent-Euclidean Computed Tomography**), a family of vision transformers pre-trained on the **CT-RATE** dataset using the **LeJEPA** framework.
+
+Three model variants are provided:
+
+* **DALE-CT-0**: pure self-supervised baseline
+* **DALE-CT-1S**: single-source auxiliary supervision using TotalSegmentator
+* **DALE-CT-2S**: dual-source auxiliary supervision using TotalSegmentator and ReXGroundingCT
 
 ---
 
 ## Repository Structure
 
-```
+```text
 .
 ├── train_lejepa.py              # LeJEPA pre-training entry point
 ├── train_gridsearch.py          # Linear probing grid search
@@ -68,7 +74,7 @@ This repository contains the training and evaluation pipeline for LeJEPA (Latent
 │   ├── model_utils.py
 │   └── standardization.py
 │
-└── configs/                     # YAML configs (one per use case)
+└── configs/                     # YAML configs
     ├── pretrain_lejepa_0.yaml   # Unguided baseline
     ├── pretrain_lejepa_1s.yaml  # Single-source TS supervision
     ├── pretrain_lejepa_2s.yaml  # Dual-source TS + ReX supervision
@@ -84,27 +90,76 @@ This repository contains the training and evaluation pipeline for LeJEPA (Latent
 
 ## Model Variants
 
-| Model | Supervision | Crop Sizes |
-|-------|------------|------------|
-| LeJEPA-0 | None (pure SSL) | 256 global, 144 local |
-| LeJEPA-1S | TotalSegmentator (118 classes) | 224 global, 140 local |
-| LeJEPA-2S | TS (118) + ReXGroundingCT (14) | 256 global, 144 local |
+| Model          | Supervision                                                | Crop Sizes            |
+| -------------- | ---------------------------------------------------------- | --------------------- |
+| **DALE-CT-0**  | None; pure self-supervised learning                        | 256 global, 144 local |
+| **DALE-CT-1S** | TotalSegmentator, 118 classes                              | 224 global, 140 local |
+| **DALE-CT-2S** | TotalSegmentator, 118 classes + ReXGroundingCT, 14 classes | 256 global, 144 local |
 
-All models use a `vit_large_patch14` backbone trained from scratch with the LeJEPA objective. The loss combines a predictive term (L2 distance between local and global view representations) with SIGReg regularization (lambda = 0.02) to prevent collapse without teacher-student heuristics. Guided variants add a BCE auxiliary loss (lambda_aux = 0.1) with positive class weighting to handle severe label imbalance.
+All models use a `vit_large_patch14` backbone trained from scratch with the LeJEPA objective.
+
+The training loss combines:
+
+* A **spatial invariance loss**, implemented as the L2 distance between local and global view representations
+* **SIGReg regularization** with `lambda = 0.02`, which prevents representation collapse without teacher-student heuristics
+* For guided variants, an auxiliary **binary cross-entropy loss** with `lambda_aux = 0.1`
+
+The guided auxiliary losses use positive class weighting to handle severe label imbalance.
 
 ---
 
 ## Evaluation Methods
 
-- **Linear Probing**: Grid search over 4 learning rates and 5 pooling schemes (average, max, learned attention, average attention, multi-learned attention). Best probe selected by validation AUPRC with per-class F1-optimal thresholds.
-- **KNN**: 5-fold cross-validation using mean-pooled slice embeddings, reporting accuracy, balanced accuracy, and macro F1 under 1-NN and 5-NN.
-- **LoRA Fine-Tuning**: Low-rank adaptation (r=8, alpha=16) on QKV projection matrices with learned attention pooling.
-- **RAD-ChestCT Transfer**: Cross-dataset evaluation mapping 18 CT-RATE classes to 14 RAD-ChestCT classes.
+### Linear Probing
+
+Linear probing performs a grid search over:
+
+* 4 learning rates
+* 5 pooling schemes:
+
+  * average pooling
+  * max pooling
+  * learned attention pooling
+  * average attention pooling
+  * multi-learned attention pooling
+
+The best probe is selected by validation AUPRC, with per-class thresholds chosen to maximize F1 score.
+
+### KNN Evaluation
+
+KNN evaluation uses 5-fold cross-validation on mean-pooled slice embeddings.
+
+Reported metrics include:
+
+* Accuracy
+* Balanced accuracy
+* Macro F1
+
+Both 1-NN and 5-NN settings are evaluated.
+
+### RAD-ChestCT Transfer
+
+RAD-ChestCT transfer evaluates cross-dataset generalization by mapping 18 CT-RATE classes to 14 RAD-ChestCT classes.
 
 ---
 
 ## Data
 
-CT-RATE volumes are pre-processed with HU clipping to [-997, 888] and Z-score normalization (mu = -142, sigma = 361, derived from 0.5%/99.5% foreground percentiles). Training uses a multi-crop strategy: 2 global crops from the center slice and 8 local crops sampled across a 12 mm volumetric window, with 80% probability of centering on RAD-ChestCT labels when present.
+CT-RATE volumes are pre-processed using:
 
----
+* HU clipping to `[-997, 888]`
+* Z-score normalization with:
+
+  * `mu = -142`
+  * `sigma = 361`
+
+The normalization statistics are derived from the 0.5% and 99.5% foreground intensity percentiles.
+
+Training uses a multi-crop strategy:
+
+* 2 global crops sampled from the center slice
+* 8 local crops sampled across a 12 mm volumetric window
+* 80% probability of centering crops on RAD-ChestCT labels when present, TotalSegmentator labels otherwise
+
+This strategy encourages the model to learn spatially consistent CT representations across local and global anatomical context.
+
