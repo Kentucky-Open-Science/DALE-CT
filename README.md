@@ -1,4 +1,4 @@
-# DALE-CT: 2D Slice Encoders Learn an Anatomical World Model of Chest CT
+# DALE-CT: Depth-Aware 2D Slice Encoders Learn an Anatomical World Model of Chest CT
 
 Training and evaluation code for **DALE-CT** (Depth-Aware Latent-Euclidean
 Computed Tomography) — a family of 2D slice-based Vision Transformers trained
@@ -10,7 +10,7 @@ slab rather than a single slice, so the frozen representations form an
 ($R^2 \approx 0.97$), recover slice ordering without labels, and localize
 organs and findings, despite no 3D or positional supervision.
 
-**Paper:** [DALE-CT: 2D Slice Encoders Learn an Anatomical World Model of Chest CT](https://arxiv.org/abs/2606.07775)
+**Paper:** [DALE-CT: Depth-Aware 2D Slice Encoders Learn an Anatomical World Model of Chest CT](https://arxiv.org/abs/2606.07775)
 
 ## Released models
 
@@ -66,7 +66,7 @@ roots. Raw datasets and checkpoints are never stored in this repository.
 
 ```bibtex
 @article{damron2026dalect,
-  title   = {DALE-CT: 2D Slice Encoders Learn an Anatomical World Model of Chest CT},
+  title   = {DALE-CT: Depth-Aware 2D Slice Encoders Learn an Anatomical World Model of Chest CT},
   author  = {Damron, Evan W. and Gokmen, Mahmut S. and Klusty, Mitchell A. and
              Leach, Caroline N. and Collier, Emily B. and Bumgardner, V. K. Cody},
   journal = {arXiv preprint arXiv:2606.07775},
