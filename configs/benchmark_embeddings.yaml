@@ -1,0 +1,139 @@
+# =============================================================================
+# Benchmark CT Foundation Model Embedding Generation
+# =============================================================================
+# Drives scripts/generate_benchmark_embeddings.py for the 6 benchmark models:
+#   rad_dino, dinov3, colipri, ct_clip, merlin, ct_fm
+#
+# Per-volume outputs: <output_root>/<model_key>/<split>/<base_name>.npz
+#   key "embeddings", shape (seq, embed_dim) float32 -> error_bars MIL probe.
+#
+# WEIGHTS PATHS point to the MOUNTED repo at
+# /app/project/ibi-staff/CT-JEPA/public/benchmark_models/... (the repo is rsync'd
+# to the DGX under /project/ibi-staff/CT-JEPA/public and exposed in-container via
+# the /project:/app/project Pyxis mount). The Docker images are DEPENDENCIES
+# ONLY -- no weights are baked in -- so extraction jobs read weights from the
+# mount offline. `family` and `embed_dim` mirror
+# utils/benchmark_backbone_loader.py BENCHMARK_SPECS (the source of truth); they
+# are repeated here for documentation and for wiring input_dim into
+# configs/error_bars.yaml.
+#
+# DATA + OUTPUT PATHS likewise point to the mounted DGX filesystem.
+#
+# mixed_precision: "bf16" -- MATCHES DALE-CT's own extraction protocol
+# (ctrate_generate_embeddings_multimethod.py hardcodes Accelerator(mixed_precision="bf16")),
+# so benchmarks are extracted under the SAME precision as the DALE-CT embeddings
+# already in the manuscript (apples-to-apples). Each extractor casts to .float()
+# before saving, so .npz output is always fp32; bf16 only affects the forward
+# intermediate, halving wall-clock on the 24.7k-volume train runs. H100-native.
+#
+# Usage:
+#   python scripts/generate_benchmark_embeddings.py \
+#       --config configs/benchmark_embeddings.yaml \
+#       --model_key rad_dino --split ctrate_valid --limit 2
+# =============================================================================
+
+mixed_precision: "bf16"
+
+output_root: /app/project/ibi-staff/CT-JEPA/features/benchmark
+
+# --- Per-model overrides (merged onto BENCHMARK_SPECS by the loader) ---
+models:
+  rad_dino:
+    family: 2d_hf
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/rad-dino  # HF dir (model.safetensors)
+    embed_dim: 768
+    hu_window: [-1500.0, 600.0]                      # lung window -> [0,255] uint8
+    processor_use_fast: false
+
+  dinov3:
+    family: 2d_hf
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/dinov3-vitl16-pretrain-lvd1689m
+    embed_dim: 1024
+    hu_window: [-1500.0, 600.0]
+    processor_use_fast: true
+
+  colipri:
+    family: 3d_colipri
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/colipri/model.safetensors
+    embed_dim: 864                                   # raw backbone (projector->768 unused)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+
+  ct_clip:
+    family: 3d_ctclip
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/CT-CHAT/CT-RATE-huggingface-downloads/CT-CLIP_v2.pt
+    embed_dim: 512
+    input_shape: [240, 480, 480]                     # (D, H, W); patch 10x20x20 -> 24^3
+    hu_clip: [-1000.0, 1000.0]
+    pad_value: -1.0
+
+  merlin:
+    family: 3d_merlin
+    # Loaded manually from this .pt by _load_merlin (no auto-download; offline).
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/Merlin/i3_resnet_clinical_longformer_best_clip_04-02-2024_23-21-36_epoch_99.pt
+    embed_dim: 2048                                  # pooled i3_resnet (CT-FM paper Merlin LP)
+    input_shape: [224, 224, 160]                     # (D,H,W) post-permute; 160 = slice/z = i3_resnet temporal dim
+    hu_clip: [-1000.0, 1000.0]
+
+  ct_fm:
+    family: 3d_ctfm
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/CT-FM/huggingface/pretrained_segresnet.torch
+    embed_dim: 512
+    patch_size: [24, 128, 128]
+    overlap: 0.625
+    batch_size: 32
+    hu_clip: [-1024.0, 2048.0]
+    max_tokens: 4096                                 # optional safety cap (variable patch count)
+
+  # --- multimodal-ct master-log arms (region-vs-global) ---------------------------
+  # Same Primus-M arch/extract path as colipri; only the checkpoint differs. Weights are
+  # Lightning .ckpt files in the multimodal-ct repo (NOT benchmark_models/), read in place
+  # so a still-training run needs no copy step. `pool: false` = raw backbone tokens, the
+  # readout that won the earlier benchmark.
+  #
+  # g3_global vs r1_region_k1 is the comparison that carries the experiment: identical LR,
+  # lambda, batch, SIGReg N, steps and seed, differing ONLY in pairing granularity.
+  levljepa_ct_g3_global:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/public/multimodal-ct/runs/g3/g3_fix_lr1e4_global_ep1/ckpt/last.ckpt
+    embed_dim: 864
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: false
+
+  levljepa_ct_r1_region_k1:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/public/multimodal-ct/runs/r1/r1_region_k1_region_ep1/ckpt/last.ckpt
+    embed_dim: 864
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: false
+
+  levljepa_ct_r1_region_full:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/public/multimodal-ct/runs/r1/r1_region_full_region_ep1/ckpt/last.ckpt
+    embed_dim: 864
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: false
+
+# --- Splits (data source per split; output goes under output_root/<model>/<split>) ---
+splits:
+  ctrate_train:
+    dataset_format: webdataset
+    validation:
+      tar_pattern: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/*.tar"
+      num_workers: 4
+
+  ctrate_valid:
+    dataset_format: npy
+    validation:
+      data_dir: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_valid_hu/"
+      num_workers: 8
+
+  rad:
+    dataset_format: npy
+    validation:
+      data_dir: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/RAD-ChestCT/"
+      num_workers: 8
+

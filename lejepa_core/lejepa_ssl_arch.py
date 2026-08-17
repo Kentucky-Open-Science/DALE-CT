@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 from torch import nn    
 from lejepa_core.SIGReg import SIGReg
+from lejepa_core.VISReg import VISReg
 from utils.config import load_model_configs
 from utils.logger_utils import write_to_main_log
 from utils.wandb_utils import log_metrics_wandb
@@ -40,10 +41,33 @@ class SSLMetaArch(nn.Module):
         self.model_params = load_model_configs(self.model_type) 
         self.device = accelerator.device 
         
-        # --- LeJEPA Hyperparameters --- 
-        self.lejepa_lambda = getattr(config.sigreg, 'lejepa_lambda', 0.02)
-        self.num_slices = getattr(config.sigreg, 'num_slices', 256)
-        self.sigreg_knots = getattr(config.sigreg, 'knots', 17)
+        # --- Regularizer config (SIGReg default; VISReg opt-in via config.regularizer.type) ---
+        reg_conf = getattr(config, 'regularizer', None)
+        sigreg_conf = getattr(config, 'sigreg', None)
+        self.regularizer_type = getattr(reg_conf, 'type', 'sigreg') if reg_conf is not None else 'sigreg'
+        # λ: prefer config.regularizer.lejepa_lambda, fall back to config.sigreg for backward compat.
+        if reg_conf is not None and hasattr(reg_conf, 'lejepa_lambda'):
+            self.lejepa_lambda = reg_conf.lejepa_lambda
+        else:
+            self.lejepa_lambda = getattr(sigreg_conf, 'lejepa_lambda', 0.02)
+        # SIGReg params (used only by the SIGReg path; kept for the log message).
+        self.num_slices = getattr(sigreg_conf, 'num_slices', 256)
+        self.sigreg_knots = getattr(sigreg_conf, 'knots', 17)
+        # VISReg params (galaxy-best "Shape 4:1" defaults).
+        self.visreg_K = getattr(reg_conf, 'K', 4096) if reg_conf is not None else 4096
+        self.visreg_lambda_scale = getattr(reg_conf, 'lambda_scale', 0.5) if reg_conf is not None else 0.5
+        self.visreg_lambda_shape = getattr(reg_conf, 'lambda_shape', 2.0) if reg_conf is not None else 2.0
+        self.visreg_lambda_center = getattr(reg_conf, 'lambda_center', 0.5) if reg_conf is not None else 0.5
+        # Collapse fixups (defaults preserve 2S/SIGReg behavior):
+        #  - apply_to: where the regularizer reads the representation. 'projector' (default)
+        #    regularizes the projector output (same space as the invariance loss). 'backbone_cls'
+        #    regularizes the backbone [CLS] — the saved/evaluated representation — directly,
+        #    bypassing the projector's LayerNorms that mask collapse from VISReg's bounded L_scale
+        #    (L_shape is scale-invariant and cannot detect uniform collapse).
+        #  - detach_centers: stop-gradient on the invariance centroid, removing the collapse driver
+        #    (without it, collapse drives inv_loss -> 0, i.e. invariance rewards collapse).
+        self.visreg_apply_to = getattr(reg_conf, 'apply_to', 'projector') if reg_conf is not None else 'projector'
+        self.invariance_detach_centers = getattr(reg_conf, 'detach_centers', False) if reg_conf is not None else False
         
         # --- LoRA Configuration ---
         self.use_lora = getattr(config.train, 'use_lora', False)
@@ -104,11 +128,25 @@ class SSLMetaArch(nn.Module):
                     type='warning'
                 )
 
-        # --- Initialize SIGReg Loss ---
-        self.sigreg = SIGReg(
-            knots=self.sigreg_knots,
-            num_slices=self.num_slices
-        ).to(self.device)
+        # --- Initialize Regularizer (SIGReg or VISReg) ---
+        if self.regularizer_type == 'visreg':
+            self.regularizer = VISReg(
+                K=self.visreg_K,
+                lambda_scale=self.visreg_lambda_scale,
+                lambda_shape=self.visreg_lambda_shape,
+                lambda_center=self.visreg_lambda_center,
+            ).to(self.device)
+        else:
+            self.regularizer = SIGReg(
+                knots=self.sigreg_knots,
+                num_slices=self.num_slices
+            ).to(self.device)
+        write_to_main_log(
+            accelerator=self.accelerator,
+            result=(f"Regularizer: type={self.regularizer_type}, lambda={self.lejepa_lambda}, "
+                    f"apply_to={self.visreg_apply_to}, detach_centers={self.invariance_detach_centers}"),
+            type='info'
+        )
          
         self.apply_interpolate = self.model_params.model_type == 'vit'
          
@@ -143,7 +181,10 @@ class SSLMetaArch(nn.Module):
         if self.accelerator.is_main_process:
             write_to_main_log(
                 accelerator=self.accelerator, 
-                result=f"✅ LeJEPA initialized: λ={self.lejepa_lambda}, M={self.num_slices}, knots={self.sigreg_knots}"
+                result=(f"✅ LeJEPA initialized: regularizer={self.regularizer_type}, λ={self.lejepa_lambda}"
+                        + (f", M={self.num_slices}, knots={self.sigreg_knots}" if self.regularizer_type == 'sigreg'
+                           else f", K={self.visreg_K}, λ_scale={self.visreg_lambda_scale}, "
+                                f"λ_shape={self.visreg_lambda_shape}, λ_center={self.visreg_lambda_center}"))
             )
          
             write_to_main_log(
@@ -199,7 +240,7 @@ class SSLMetaArch(nn.Module):
             metrics_to_log = {
                 "train/total_loss": loss_dict['total_loss'].item(),
                 "train/inv_loss": loss_dict['inv_loss'].item(),
-                "train/sigreg_loss": loss_dict['sigreg_loss'].item(),
+                "train/reg_loss": loss_dict['sigreg_loss'].item(),
                 "train/learning_rate": self.optimizer.param_groups[0]["lr"]
             }
 
@@ -215,6 +256,17 @@ class SSLMetaArch(nn.Module):
                     metrics_to_log[f"train/{key}"] = val
 
             log_metrics_wandb(metrics_to_log, step=iteration)
+
+            # Optional per-iter CSV trace (verification only; off unless
+            # config.train.log_csv_path is set). Used for the resume-spike A/B/C
+            # comparison so SIGReg/inv_loss trajectories can be diffed exactly.
+            csv_path = getattr(self.config.train, 'log_csv_path', None)
+            if csv_path:
+                with open(csv_path, 'a') as f:
+                    f.write(f"{iteration},{loss_dict['total_loss'].item():.6f},"
+                            f"{loss_dict['inv_loss'].item():.6f},"
+                            f"{loss_dict['sigreg_loss'].item():.6f},"
+                            f"{self.optimizer.param_groups[0]['lr']:.8f}\n")
 
         return self._format_log_string(loss_dict, iteration), loss_dict['probe_features'].detach()
 
@@ -388,19 +440,34 @@ class SSLMetaArch(nn.Module):
         # A) Invariance Loss (Feature Clustering)
         # Target: The 'Consensus' (mean) of the 2 Global views for each image in the batch
         # global_out.mean(dim=1) -> (256, 128) | Shape: [B, D]
-        centers = global_out.mean(dim=1) 
-        
-        # Calculate MSE between the Target (centers) and all 8 views. 
+        centers = global_out.mean(dim=1)
+        if self.invariance_detach_centers:
+            # Stop-gradient on the centroid: without this, collapse drives inv_loss -> 0, so
+            # invariance actively rewards collapse. Detaching makes the centroid a fixed target
+            # (SimSiam-style) and removes the collapse driver.
+            centers = centers.detach()
+
+        # Calculate MSE between the Target (centers) and all 8 views.
         # centers.unsqueeze(0) -> (1, 256, 128) broadcasts against proj (8, 256, 128)
         inv_loss = (centers.unsqueeze(0) - proj).square().mean()
-        
-        # B) SIGReg Loss (Collapse Prevention)
-        # We pass the entire (8, 256, 128) tensor. SIGReg uses a single random projection 
-        # matrix A for all views and calculates the Gaussian distribution loss across the Batch (dim 1).
-        sigreg_loss = self.sigreg(x=proj,global_step=iteration)
+
+        # B) Regularizer Loss (Collapse Prevention)
+        # Default: regularize the projector output `proj` (V_total, B, D_proj) — same space as
+        # the invariance loss. 'backbone_cls' option: regularize the backbone [CLS] (the saved/
+        # evaluated representation) directly, bypassing the projector's LayerNorms which mask
+        # collapse from VISReg's bounded L_scale term. SIGReg is unbounded on collapse so it did
+        # not need this; VISReg's L_scale is capped at 1.0 and L_shape is scale-invariant, so
+        # regularizing the backbone [CLS] directly is what guarantees the saved rep stays alive.
+        if self.visreg_apply_to == 'backbone_cls':
+            global_cls = global_feat[:, :, 0, :]   # (B, V_g, D_bb)
+            local_cls = local_feat[:, :, 0, :]     # (B, V_l, D_bb)
+            reg_input = torch.cat([global_cls, local_cls], dim=1).transpose(0, 1)  # (V_total, B, D_bb)
+        else:
+            reg_input = proj
+        reg_loss = self.regularizer(x=reg_input, global_step=iteration)
         
         # C) Total LeJEPA Loss: Weighted sum of Invariance and Regularization
-        lejepa_loss = self.lejepa_lambda * sigreg_loss + (1 - self.lejepa_lambda) * inv_loss
+        lejepa_loss = self.lejepa_lambda * reg_loss + (1 - self.lejepa_lambda) * inv_loss
 
         total_loss = lejepa_loss
         # --- Soft Label Auxiliary Loss ---
@@ -446,7 +513,7 @@ class SSLMetaArch(nn.Module):
 
         # --- Logging and Output ---
         loss_dict['inv_loss'] = inv_loss
-        loss_dict['sigreg_loss'] = sigreg_loss
+        loss_dict['sigreg_loss'] = reg_loss
         loss_dict['lejepa_loss'] = lejepa_loss
         loss_dict['total_loss'] = total_loss
 
@@ -475,7 +542,7 @@ class SSLMetaArch(nn.Module):
         log_parts = [
             f"Total: {loss_dict['total_loss'].item():.4f}",
             f"Inv: {loss_dict['inv_loss'].item():.4f}",
-            f"SIGReg: {loss_dict['sigreg_loss'].item():.4f}"
+            f"Reg: {loss_dict['sigreg_loss'].item():.4f}"
         ]
 
         # 2. Define standard keys to filter out from the dynamic loop

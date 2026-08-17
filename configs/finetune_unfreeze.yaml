@@ -1,0 +1,140 @@
+# =============================================================================
+# End-to-End Fine-Tuning — Unfreeze Ablation Axis
+# =============================================================================
+# Ablation over fine-tuning method on the DALE-CT-2S backbone:
+#   {LoRA, partial_unfreeze (freeze first N blocks, N in {16,12,8,4}), full_unfreeze}
+# paired with the new architecture:
+#   - CLS + attention-pooled patch tokens per slice  (use_patch_pooling)
+#   - order-aware SliceOrderTransformer over slices  (use_slice_transformer)
+#   - z_score normalization matching the 2S pretrain
+#
+# This base config is the full_unfreeze variant (most demanding — highest VRAM,
+# so it is the one the smoke test must clear first). The sbatch driver generates
+# the other 5 variants by overriding the variant-specific fields marked
+# "#variant" below: finetune_method, unfreeze_layers, model_name, run_name.
+#
+# backbone_lr is held CONSTANT (3e-5) across all unfreeze variants so the
+# N-sweep isolates the effect of freeze-count. LoRA uses lora_lr instead.
+#
+# Usage: python train_e2e_lora.py --config configs/finetune_unfreeze.yaml
+# =============================================================================
+
+data:
+  # CSV mapping VolumeName -> 18 binary abnormality labels (true HU pipeline)
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+
+experiment:
+  seed: 42
+  epochs: 3
+  accumulation_steps: 32              # effective batch = acc_steps × per_device
+  steps_per_epoch: 375                # optimizer steps/epoch (WebDataset has no __len__)
+  input_dim: 1024                     # ViT-Large embedding dim
+  num_classes: 18                     # CT-RATE abnormality classes
+
+  best_pooling_scheme: "learned_attention"
+  save_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_unfreeze_ablation/
+
+  # --- Ablation axis (variant-specific; #variant) ---
+  finetune_method: "full_unfreeze"    #variant  # lora | partial_unfreeze | full_unfreeze
+  unfreeze_layers: 0                  #variant  # blocks frozen from the front (partial_unfreeze only)
+  backbone_lr: 3.0e-5                 # unfrozen backbone lr (held constant across the N-sweep); LoRA ignores this
+
+  # --- Optimizer ---
+  lora_lr: 5.0e-4                     # LoRA adapter lr (LoRA variant only)
+  head_lr: 1.0e-4                     # Colipri head + new arch modules lr
+  weight_decay: 0.01
+
+  # --- LR schedule ---
+  warmup_steps: 40
+  min_lr_ratio: 0.01
+
+  # --- Gradient checkpointing ---
+  chunk_size: 32                      # slices per forward chunk (val only; train uses hardcoded 32)
+
+  # --- LoRA config (LoRA variant only) ---
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+
+  # --- Validation ---
+  val_every_n_steps: 50
+  val_max_batches: 200
+  early_stopping_patience: 10
+
+  # --- New architecture ---
+  use_patch_pooling: true             # CLS + attention-pooled patch tokens per slice
+  use_slice_transformer: true         # order-aware transformer over slices
+  slice_transformer:
+    num_layers: 2
+    num_heads: 8
+    max_slices: 512                   # pos-embed table size; long volumes are subsampled to this
+    dropout: 0.0
+
+  # Positive class weights for BCE (computed from training-set prevalence)
+  pos_weights: [7.1040, 2.5246, 7.8826, 12.8186, 2.9209, 5.9840, 2.8580, 4.1687, 2.8448, 1.2051, 1.7066, 2.7453, 7.2645, 11.9601, 8.4810, 4.6676, 8.9639, 11.5899]
+
+wandb:
+  project: "DALE-CT-e2e-unfreeze"
+  run_name: "unfreeze_full"           #variant
+  group: "e2e_unfreeze_ablation"
+  mode: "offline"                     # compute nodes have no internet; sync from login node
+
+# --- Backbone Configuration ---
+train:
+  model_type: "Guided-Chest-CT-LeJEPA-V2"   # = DALE-CT-2S arch (vit_large_patch14_dinov2, patch16, img512, in_chans=1)
+  model_name: "unfreeze_full"               #variant  # checkpoint subdir under main_output
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/outputs/Guided_Chest_CT_LeJEPA_V2/model_checkpoints/iter_50000/
+  use_pretrained: false                     # load from local vit_ckpt_path (not HuggingFace)
+  drop_path_rate: 0.0
+
+# --- Data Processing ---
+# z_score matches the 2S pretrain (CTInferenceTransform in load_hf/lejepa_2s.py):
+#   clamp [-997, 888] -> [0,1] -> z-score with mean=-142.39, std=360.97 (0-1 scaled).
+dataset:
+  normalization_mode: "z_score"
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+  num_channels: 1
+  max_slices: 256                     # cap z-axis slice count (bounds DDP per-batch compute skew; None=off)
+
+# --- DataLoader ---
+validation:
+  dataset_format: "webdataset"
+  train_tar_pattern: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/shards-w*.tar
+  num_workers: 4
+
+  # Validation: whole-volume .npy (true HU) from the CT-RATE valid set
+  val_dataset_format: "npy"
+  val_data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_valid_hu/
+  val_label_csv: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+  val_max_patients: 200
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"              # find body mask, take squared ROI
+  extract_patches: false              # no-op for training; the patch path is gated by use_patch_pooling above
+
+crops:
+  global_crops_size: 256              # target resolution for ROI alignment (matches 2S pretrain crop)
+
+# --- Required placeholders (not used by e2e training but kept for config-loader parity) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_unfreeze_ablation
+  log_dir: logs
+  e2e_save_dir: checkpoints
+
+dino_head:
+  out_dim: 65536
+  norm_last_layer: true
+  hidden_dim: 2048
+  bottleneck_dim: 256
+  nlayers: 3

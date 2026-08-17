@@ -1,165 +1,75 @@
-# DALE-CT Pretraining
+# DALE-CT: Depth-Aware Foundation Models for Computed Tomography
 
-This repository contains the training and evaluation pipeline for **DALE-CT** (**Depth-Aware Latent-Euclidean Computed Tomography**), a family of vision transformers pre-trained on the **CT-RATE** dataset using the **LeJEPA** framework.
+Training and evaluation code for **DALE-CT** (Depth-Aware Latent-Euclidean
+Computed Tomography) — a family of 2D slice-based Vision Transformers trained
+entirely from scratch on chest CT with the heuristics-free
+[LeJEPA](https://arxiv.org/abs/2511.08544) objective and **depth-aware slab
+sampling**: self-supervised views are drawn from across a physical $z$-axis
+slab rather than a single slice, so the frozen representations form an
+**anatomical world model** — they linearly decode volumetric slice position
+($R^2 \approx 0.97$), recover slice ordering without labels, and localize
+organs and findings, despite no 3D or positional supervision.
 
-Three model variants are provided:
+**Paper:** [DALE-CT: Depth-Aware Foundation Models for Computed Tomography](https://arxiv.org/abs/2606.07775)
 
-* **DALE-CT-0**: pure self-supervised baseline
-* **DALE-CT-1S**: single-source auxiliary supervision using TotalSegmentator
-* **DALE-CT-2S**: dual-source auxiliary supervision using TotalSegmentator and ReXGroundingCT
+## Released models
 
----
+All weights are on the Hugging Face Hub (CC-BY-NC-SA-4.0) and load in one line
+via `timm`:
 
-## Repository Structure
-
-```text
-.
-├── train_lejepa.py              # LeJEPA pre-training entry point
-├── train_gridsearch.py          # Linear probing grid search
-├── train_e2e_lora.py            # LoRA fine-tuning
-├── eval_rad.py                  # RAD-ChestCT transfer evaluation
-├── test_ct_dataloader.py        # Dataloader debugging
-├── requirements.txt
-├── Dockerfile
-│
-├── lejepa_core/                 # Core LeJEPA architecture
-│   ├── lejepa_ssl_arch.py       # SSLMetaArch training module
-│   ├── main_lejepa_trainer.py   # Distributed training orchestration
-│   └── SIGReg.py                # Sketched Isotropic Gaussian Regularization
-│
-├── models/                      # Model definitions
-│   ├── vision_transformer.py    # ViT backbone builders
-│   ├── lejepa_projector.py      # LeJEPA projection head
-│   ├── colipri_pooling.py       # 5 pooling schemes for linear probing
-│   └── e2e_colipri.py           # End-to-end model wrapper
-│
-├── data/                        # Data processing
-│   ├── guided_data_augmentation_CT_RATE.py  # Multi-crop augmentation
-│   └── collate.py               # Batch collation
-│
-├── dataloaders/                 # Dataset loaders
-│   ├── datasetloader_web_ctrate.py          # WebDataset loader
-│   ├── datasetloader_ctrate_multiscale.py   # Multi-scale .npy loader
-│   ├── dataloader_embeddings.py             # Pre-computed embedding loader
-│   ├── dataloader_linear.py                 # Linear probing loader
-│   └── dataloader_rad_embeddings.py         # RAD-ChestCT loader
-│
-├── supervised_heads/            # Auxiliary supervision heads
-│   ├── organ_supervision.py     # TotalSegmentator classification
-│   ├── soft_label_supervision.py
-│   └── example_supervised_head.py
-│
-├── scripts/                     # Evaluation scripts
-│   ├── ctrate_generate_embeddings.py
-│   ├── knn.py
-│   ├── supervised_gap.py
-│   ├── supervised_3D.py
-│   ├── e2e_inference.py
-│   ├── evaluate_gap.py
-│   └── precompute_aggregations.py
-│
-├── utils/                       # Shared utilities
-│   ├── config.py                # OmegaConf configuration
-│   ├── dino_utils.py            # Model init, LoRA, checkpointing
-│   ├── lejepa_scheduler.py      # LR/WD scheduling
-│   ├── dist_utils.py            # FSDP/DDP distributed training
-│   ├── distributed_checkpointer.py
-│   ├── model_checkpointer_ddp.py
-│   ├── model_checkpointer_fsdp.py
-│   ├── global_state.py
-│   ├── logger_utils.py
-│   ├── wandb_utils.py
-│   ├── metrics.py
-│   ├── config_utils.py
-│   ├── model_utils.py
-│   └── standardization.py
-│
-└── configs/                     # YAML configs
-    ├── pretrain_lejepa_0.yaml   # Unguided baseline
-    ├── pretrain_lejepa_1s.yaml  # Single-source TS supervision
-    ├── pretrain_lejepa_2s.yaml  # Dual-source TS + ReX supervision
-    ├── linear_probe.yaml        # Grid search over pooling schemes
-    ├── finetune_lora.yaml       # LoRA fine-tuning
-    ├── rad_transfer.yaml        # RAD-ChestCT transfer
-    ├── generate_embeddings.yaml # Embedding extraction
-    ├── knn_eval.yaml            # KNN evaluation
-    └── models/                  # Model architecture definitions
+```python
+import timm
+model = timm.create_model("hf-hub:Kentucky-Open-Science/DALE-CT-0-L", pretrained=True)
 ```
 
----
+| Model | CT-RATE Macro AUROC | RAD-ChestCT AUROC (frozen / retrained probe) | Role |
+|---|---|---|---|
+| [DALE-CT-0-L](https://huggingface.co/Kentucky-Open-Science/DALE-CT-0-L) ⭐ | 0.8156 | 0.6281 / **0.7572** | **Recommended general-purpose backbone** — best 2D external transfer; supervision-free at ~296k-scan scale |
+| [DALE-CT-2S](https://huggingface.co/Kentucky-Open-Science/DALE-CT-2S) | **0.8247** | 0.6252 / 0.7389 | Best in-domain (CT-RATE) |
+| [DALE-CT-1S-v2](https://huggingface.co/Kentucky-Open-Science/DALE-CT-1S-v2) | 0.8098 | 0.6284 / 0.7334 | Anatomical (TotalSegmentator) dense supervision only |
+| [DALE-CT-0](https://huggingface.co/Kentucky-Open-Science/DALE-CT-0) | 0.8057 | 0.5946 / 0.7477 | Pure self-supervised, CT-RATE |
+| [Finetuned DINOv2](https://huggingface.co/Kentucky-Open-Science/Finetuned-DINOv2-Chest-CT) | 0.7953 | 0.6252 / 0.7550 | Continual-pretraining baseline |
 
-## Model Variants
+All numbers are our own head-to-head measurements: every model in the paper
+(including public 3D baselines COLIPRI-CRM, Merlin, CT-FM, CT-CLIP) is probed
+under one linear-probing MIL protocol on shared splits with bootstrap
+confidence intervals. Each model card documents the exact Hounsfield-Unit
+preprocessing its backbone expects — **DALE-CT-0-L uses different
+normalization statistics than the CT-RATE-trained variants.**
 
-| Model          | Supervision                                                | Crop Sizes            |
-| -------------- | ---------------------------------------------------------- | --------------------- |
-| **DALE-CT-0**  | None; pure self-supervised learning                        | 256 global, 144 local |
-| **DALE-CT-1S** | TotalSegmentator, 118 classes                              | 224 global, 140 local |
-| **DALE-CT-2S** | TotalSegmentator, 118 classes + ReXGroundingCT, 14 classes | 256 global, 144 local |
+## Repository map
 
-All models use a `vit_large_patch14` backbone trained from scratch with the LeJEPA objective.
+| Path | Contents |
+|---|---|
+| `train_lejepa.py` | Pre-training entry point (all DALE-CT variants) |
+| `lejepa_core/` | LeJEPA architecture: SSL meta-arch, trainer, SIGReg |
+| `models/` | ViT backbone, projector, MIL pooling heads |
+| `supervised_heads/` | Dense auxiliary supervision (TotalSegmentator / ReXGroundingCT soft labels) |
+| `dataloaders/` | CT-RATE WebDataset, multi-scale multi-crop, multi-source zarr, embedding loaders |
+| `configs/` | OmegaConf YAML for every pretraining / probing / evaluation run |
+| `scripts/run_error_bars.py` | Head-to-head benchmark: probe selection, seed variance, bootstrap CIs |
+| `scripts/generate_benchmark_embeddings.py` | Embedding extraction for the public 3D baselines |
+| `scripts/run_model_comparison_probes.py` | Dense 2D probing (auxiliary-task tables) |
+| `scripts/exp_c_zposition.py`, `scripts/exp_c_worldmodel_probes.py` | Anatomical world-model probes ($z$-regression, slice ordering, organ identity) |
+| `train_gridsearch.py`, `eval_rad.py` | Linear-probe grid search; RAD-ChestCT transfer |
+| `train_e2e_lora.py` | LoRA fine-tuning |
+| `ERROR_BARS_README.md`, `BENCHMARK_EMBEDDINGS_README.md` | Protocol documentation for the benchmark pipelines |
 
-The training loss combines:
+Dataset preparation (CT-RATE → WebDataset shards, TotalSegmentator masks) lives
+in the companion repo
+[Process-CT-Data](https://github.com/Kentucky-Open-Science/Process-CT-Data).
 
-* A **spatial invariance loss**, implemented as the L2 distance between local and global view representations
-* **SIGReg regularization** with `lambda = 0.02`, which prevents representation collapse without teacher-student heuristics
-* For guided variants, an auxiliary **binary cross-entropy loss** with `lambda_aux = 0.1`
+Paths in configs refer to our cluster layout; point them at your own data
+roots. Raw datasets and checkpoints are never stored in this repository.
 
-The guided auxiliary losses use positive class weighting to handle severe label imbalance.
+## Citation
 
----
-
-## Evaluation Methods
-
-### Linear Probing
-
-Linear probing performs a grid search over:
-
-* 4 learning rates
-* 5 pooling schemes:
-
-  * average pooling
-  * max pooling
-  * learned attention pooling
-  * average attention pooling
-  * multi-learned attention pooling
-
-The best probe is selected by validation AUPRC, with per-class thresholds chosen to maximize F1 score.
-
-### KNN Evaluation
-
-KNN evaluation uses 5-fold cross-validation on mean-pooled slice embeddings.
-
-Reported metrics include:
-
-* Accuracy
-* Balanced accuracy
-* Macro F1
-
-Both 1-NN and 5-NN settings are evaluated.
-
-### RAD-ChestCT Transfer
-
-RAD-ChestCT transfer evaluates cross-dataset generalization by mapping 18 CT-RATE classes to 14 RAD-ChestCT classes.
-
----
-
-## Data
-
-CT-RATE volumes are pre-processed using:
-
-* HU clipping to `[-997, 888]`
-* Z-score normalization with:
-
-  * `mu = -142`
-  * `sigma = 361`
-
-The normalization statistics are derived from the 0.5% and 99.5% foreground intensity percentiles.
-
-Training uses a multi-crop strategy:
-
-* 2 global crops sampled from the center slice
-* 8 local crops sampled across a 12 mm volumetric window
-* 80% probability of centering crops on RAD-ChestCT labels when present, TotalSegmentator labels otherwise
-
-This strategy encourages the model to learn spatially consistent CT representations across local and global anatomical context.
-
+```bibtex
+@article{damron2026dalect,
+  title   = {DALE-CT: Depth-Aware Foundation Models for Computed Tomography},
+  author  = {Damron, Evan W. and Gokmen, Mahmut S. and Klusty, Mitchell A. and
+             Leach, Caroline N. and Collier, Emily B. and Bumgardner, V. K. Cody},
+  journal = {arXiv preprint arXiv:2606.07775},
+  year    = {2026}
+}
+```

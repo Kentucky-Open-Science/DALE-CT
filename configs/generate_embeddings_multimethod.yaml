@@ -1,0 +1,137 @@
+# =============================================================================
+# Multi-Method Embedding Generation Configuration (WebDataset)
+# =============================================================================
+# Extracts slice-level embeddings using multiple preprocessing strategies
+# in a single pass over the dataset. Each volume is loaded once, then all
+# methods are applied to the same slices.
+#
+# Usage:
+#   python scripts/ctrate_generate_embeddings_multimethod.py \
+#       --config configs/generate_embeddings_multimethod.yaml
+# =============================================================================
+
+train:
+  model_type: Guided-Chest-CT-LeJEPA-V2  # Architecture variant (patch_size=16, hidden_size=1024, in_chans=1)
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/outputs/Guided_Chest_CT_LeJEPA_V2/model_checkpoints/iter_50000/
+  use_pretrained: false                  # Load from local checkpoint (not HuggingFace)
+
+dataset:
+  # Z-Score normalization parameters (must match pre-training)
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+  num_channels: 1
+
+# --- Data Source ---
+validation:
+  dataset_format: "webdataset"
+  tar_pattern: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/*.tar
+  num_workers: 8
+
+# --- Balanced Subset Selection ---
+# Selects a label-balanced subset of patients for embedding extraction.
+# Only the first scan per patient is considered.
+# Set enabled: false to process the full dataset.
+balanced_subset:
+  enabled: true
+  label_csv: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  n_patients: 5000
+  seed: 42
+
+# --- Multi-Method Configuration ---
+# Each method below will be run on every volume in a single pass.
+# Results are saved as a dict of numpy arrays per volume.
+
+methods:
+  # =========================================================================
+  # UNCROPPED METHODS (no body masking, full slice used)
+  # =========================================================================
+
+  # Method 1: Full resolution capped at 512x512 (patch-aligned)
+  # Both CLS and patch tokens saved
+  full_resolution:
+    enabled: true
+    crop: false
+    resize_target: null          # null = auto-compute from image, capped at max_size
+    max_size: 512                # Maximum dimension (patch-aligned)
+    extract_patches: false       # CLS token only
+    description: "Full resolution capped at 512x512, patch-aligned, CLS only"
+
+  # Method 2: Raw image resized to 256x256
+  # CLS token only
+  raw_resize_256:
+    enabled: true
+    crop: false
+    resize_target: 256
+    extract_patches: false
+    description: "Raw image bilinear-resized to 256x256, CLS only"
+
+  # Method 3: Raw image resized to 144x144
+  # CLS token only
+  raw_resize_144:
+    enabled: true
+    crop: false
+    resize_target: 144
+    extract_patches: false
+    description: "Raw image bilinear-resized to 144x144, CLS only"
+
+  # =========================================================================
+  # CROPPED METHODS (body masking, square ROI, then resize)
+  # =========================================================================
+
+  # Method 4: Body-cropped, resized to nearest patch-size multiple, capped at 512
+  # CLS token only
+  cropped_patch_aligned:
+    enabled: true
+    crop: true
+    resize_target: null          # null = auto-compute from bbox, capped at max_size
+    max_size: 512                # Maximum dimension (patch-aligned)
+    extract_patches: false
+    description: "Body-cropped square ROI, patch-aligned, capped at 512x512, CLS only"
+
+  # Method 5: Body-cropped, resized to 256x256
+  # CLS token only
+  cropped_256:
+    enabled: true
+    crop: true
+    resize_target: 256
+    extract_patches: false
+    description: "Body-cropped square ROI, resized to 256x256, CLS only"
+
+  # Method 6: Body-cropped, resized to 144x144
+  # CLS token only
+  cropped_144:
+    enabled: true
+    crop: true
+    resize_target: 144
+    extract_patches: false
+    description: "Body-cropped square ROI, resized to 144x144, CLS only"
+
+  # =========================================================================
+  # TILED METHOD (body crop, then 5-cut, all resized to 256)
+  # =========================================================================
+
+  # Method 7: Body-cropped, 5-cut tiling, CLS only
+  tiled_5cut:
+    enabled: true
+    crop: true
+    tile_mode: "5cut"            # Crop body -> 5-cut the result -> resize each to 256
+    tile_size: 256
+    extract_patches: false       # CLS only for tiled method
+    description: "Body-cropped, 5-cut tiled, each cut resized to 256x256, CLS only"
+
+# --- Output ---
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs/v2_embeddings/train/
+
+# --- Required Placeholders (not used by embedding generation but required by config loader) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+lora_config:
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1

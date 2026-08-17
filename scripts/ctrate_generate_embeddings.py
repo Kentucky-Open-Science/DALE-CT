@@ -104,8 +104,16 @@ def run_inference_3d(model, dataloader, accelerator, config, output_dir, slice_b
         save_name = os.path.splitext(filename)[0] + ".npy"
         save_path = os.path.join(output_dir, save_name)
 
+        # Validate existing .npy — delete if corrupt/partial (e.g., from interrupted run)
         if os.path.exists(save_path):
-            continue
+            try:
+                _ = np.load(save_path, allow_pickle=False)
+                continue
+            except Exception:
+                accelerator.print(
+                    f"Corrupt .npy detected, deleting and re-processing: {save_path}"
+                )
+                os.remove(save_path)
 
         raw_volume = volumes.squeeze(0)
         num_slices = raw_volume.shape[0]
@@ -159,7 +167,7 @@ def run_inference_3d(model, dataloader, accelerator, config, output_dir, slice_b
     print(f"✅ Rank {accelerator.process_index} inference complete. Embeddings saved to {emb_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate embeddings from CT-RATE dataset")
+    parser = argparse.ArgumentParser(description="Generate embeddings from CT-RATE-huggingface-downloads dataset")
     parser.add_argument("--config_file", type=str, default="ctrate_embeddings.yaml", help="Path to config")
     parser.add_argument("--slice_batch_size", type=int, default=32, help="Batch size for slices")
     args = parser.parse_args()

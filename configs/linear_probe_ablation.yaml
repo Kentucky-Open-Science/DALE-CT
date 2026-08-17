@@ -1,0 +1,90 @@
+# =============================================================================
+# Linear Probing Ablation Study Configuration
+# =============================================================================
+# Master config for running the linear probe grid search across all
+# multi-method embedding variants produced by ctrate_generate_embeddings_multimethod.py.
+#
+# The multi-method script saves each method's embeddings in a subdirectory:
+#   {embedding_root}/train/{method_name}/*.npz
+#   {embedding_root}/valid/{method_name}/*.npz
+#
+# This config defines the root paths and the list of methods to evaluate.
+# The wrapper script (scripts/run_ablation_gridsearch.py) iterates over each
+# method, creates a per-method linear_probe.yaml on-the-fly, and runs
+# train_gridsearch.py.
+#
+# Usage:
+#   python scripts/run_ablation_gridsearch.py \
+#       --config configs/linear_probe_ablation.yaml
+# =============================================================================
+
+# --- Embedding Source ---
+# Root directories containing per-method subdirectories of .npz files
+embeddings:
+  train_root: /app/project/ibi-staff/CT-JEPA/public/outputs/v2_embeddings/train/
+  valid_root: /app/project/ibi-staff/CT-JEPA/public/outputs/v2_embeddings/valid/
+
+  # List of method names to evaluate (must match subdirectory names)
+  # These correspond to the 'methods' keys in generate_embeddings_multimethod.yaml
+  methods:
+    - full_resolution
+    - raw_resize_256
+    - raw_resize_144
+    - cropped_patch_aligned
+    - cropped_256
+    - cropped_144
+    - tiled_5cut
+
+# --- Labels ---
+data:
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+
+# --- Grid Search Parameters (shared across all methods) ---
+experiment:
+  seed: 42
+  total_steps: 15000
+  eval_freq: 2500
+  batch_size: 16
+  input_dim: 1024
+  num_classes: 18
+  save_root: /app/project/ibi-staff/CT-JEPA/public/outputs/ablation_linear_probe/
+
+  pooling_mode: "embedding"
+
+  pooling_schemes:
+    - "average"
+    - "max"
+    - "learned_attention"
+
+  learning_rates:
+    - 0.1
+    - 0.03
+    - 0.01
+    - 0.003
+
+wandb:
+  project: "CT-RATE-huggingface-downloads-Ablation"
+  group: "multimethod_linear_probe"
+  mode: "offline"
+
+# --- CT-RATE-huggingface-downloads class names (must match label CSV columns) ---
+ct_rate_classes:
+  - "Medical material"
+  - "Arterial wall calcification"
+  - "Cardiomegaly"
+  - "Pericardial effusion"
+  - "Coronary artery wall calcification"
+  - "Hiatal hernia"
+  - "Lymphadenopathy"
+  - "Emphysema"
+  - "Atelectasis"
+  - "Lung nodule"
+  - "Lung opacity"
+  - "Pulmonary fibrotic sequela"
+  - "Pleural effusion"
+  - "Mosaic attenuation pattern"
+  - "Peribronchial thickening"
+  - "Consolidation"
+  - "Bronchiectasis"
+  - "Interlobular septal thickening"

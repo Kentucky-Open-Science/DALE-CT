@@ -1,2 +1,27 @@
-/.dockerignore
-./.idea
+# === sync policy: data and artifacts never reach GitHub ===
+# (canonical copy lives in Atlas config/; a pre-commit hook additionally
+#  blocks any file >50 MB regardless of name)
+data/
+datasets/
+outputs/
+output/
+results/
+checkpoints/
+ckpts/
+runs/
+wandb/
+logs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.npz
+*.h5
+*.hdf5
+*.nii
+*.nii.gz
+__pycache__/
+.venv/
+.DS_Store
+.idea/
+.claude/settings.local.json

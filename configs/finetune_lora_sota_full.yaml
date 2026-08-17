@@ -1,0 +1,156 @@
+# =============================================================================
+# End-to-End LoRA Fine-Tuning — FULL CT-RATE, SOTA-beat shot 1
+# =============================================================================
+# Goal (Evan, 2026-07-13): beat CT-RATE classification SOTA
+#   ORACLE-CT (arXiv:2601.13385, supervised organ-masked 3D ResNet-121):
+#   macro AUROC 0.8612 / macro AUPRC 0.6128.
+# Our best so far (Stage 0, full ~47k train, NON-annealed cosine): 0.8424/0.5617.
+# Gap to close: AUROC -1.88, AUPRC -5.11.
+#
+# This config = LoRA on the FULL 47k WDS train, with the two Stage-0 bugs fixed:
+#   1. SCHEDULE FIX: steps_per_epoch 375 -> 170 so total_steps=510 < real yield
+#      (~552). Stage 0 set total_steps=1125 but only ~500 ran, so the cosine
+#      NEVER annealed (LR stuck at ~61% of peak -> undertrained). With total_steps
+#      =510 the L931 safety cap fires at step 510 and the cosine anneals to
+#      min_lr_ratio=0.01. (train_e2e_lora.py:652,655-659,931)
+#   2. CKPT-VAL LEAK FIX: Stage 0 drew ckpt-val from CT-RATE_valid_hu (the same
+#      pool the 992 test is drawn from -> best-ckpt selected on test-overlap ->
+#      headline inflated). Repointed to 300 patient-disjoint vols in
+#      CT-RATE_train_hu (fair_train_split_val.txt, verified patient-disjoint from
+#      the 992 test by make_fair_train_split.py Protocol A, 2026-07-13).
+#
+# Labels are CANONICAL (md5-verified vs official CT-RATE metadata): the
+# "predicted_labels" name = how CT-RATE generated them (a labeler), NOT teacher
+# soft-predictions. No label swap needed/possible.
+#
+# grad_ckpt OFF (proven 44.70 GB peak on 80 GB H100, ~33% faster than ON).
+#
+# Comparability caveats (flag with any "beat SOTA" claim):
+#   - ORACLE-CT maps 18 findings -> 16 labels; we keep 18.
+#   - ORACLE-CT test = 3,040; we eval BOTH 992 fair-valid AND full 3,039.
+#   - ORACLE-CT = supervised 3D-from-scratch; we e2e-finetune a pretrained 2D ViT.
+# =============================================================================
+
+data:
+  # CSV mapping VolumeName -> 18 binary abnormality labels (canonical CT-RATE)
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+
+experiment:
+  seed: 42
+  epochs: 3
+  accumulation_steps: 32              # effective batch = acc_steps × per_device × world = 32×1×8 = 256
+  steps_per_epoch: 170                # SCHEDULE FIX: total_steps=510 < real yield ~552 -> cosine anneals
+  input_dim: 1024                     # ViT-Large embedding dim
+  num_classes: 18                     # CT-RATE abnormality classes
+
+  best_pooling_scheme: "learned_attention"
+  save_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_sota_full/
+
+  # --- Fine-tuning method ---
+  finetune_method: "lora"             # cheapest/cleanest for shot 1 (Stage 0 3-way tie -> method not the lever)
+  unfreeze_layers: 0                  # no-op for LoRA
+  backbone_lr: 3.0e-5                 # unused for LoRA (lora_lr governs adapters)
+
+  # --- Optimizer ---
+  lora_lr: 5.0e-4                     # LoRA adapter lr
+  head_lr: 1.0e-4                     # Colipri head + new arch modules lr
+  weight_decay: 0.05                  # match ORACLE-CT + Stage 2 (mild reg for rare-class AUPRC)
+
+  # --- LR schedule ---
+  warmup_steps: 40
+  min_lr_ratio: 0.01                  # cosine floor (anneal is the fix)
+
+  # --- Gradient checkpointing ---
+  use_gradient_checkpointing: false   # OFF: 44.70 GB peak, ~33% faster
+  chunk_size: 32                      # slices per forward chunk (val only; train uses hardcoded 32)
+
+  # --- LoRA config ---
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+
+  # --- Validation ---
+  val_every_n_steps: 100              # 5 cycles over 510 steps (~12 min total; val is unsharded)
+  val_max_batches: 300                # cover all 300 patient-disjoint val vols
+  early_stopping_patience: 10         # > #val-cycles -> never fires (train to completion)
+
+  # --- New architecture ---
+  use_patch_pooling: true             # CLS + attention-pooled patch tokens per slice
+  use_slice_transformer: true         # order-aware transformer over slices
+  slice_transformer:
+    num_layers: 2
+    num_heads: 8
+    max_slices: 512                   # pos-embed table size; long volumes are subsampled to this
+    dropout: 0.0
+
+  # Positive class weights for BCE (computed from training-set prevalence)
+  pos_weights: [7.1040, 2.5246, 7.8826, 12.8186, 2.9209, 5.9840, 2.8580, 4.1687, 2.8448, 1.2051, 1.7066, 2.7453, 7.2645, 11.9601, 8.4810, 4.6676, 8.9639, 11.5899]
+
+wandb:
+  project: "DALE-CT-e2e-unfreeze"
+  run_name: "lora_full_sota"
+  group: "e2e_sota_full"
+  mode: "offline"                     # compute nodes have no internet; sync from login node
+
+# --- Backbone Configuration ---
+train:
+  model_type: "Guided-Chest-CT-LeJEPA-V2"   # = DALE-CT-2S arch (vit_large_patch14_dinov2, patch16, img512, in_chans=1)
+  model_name: "lora_full_sota"               # checkpoint subdir under main_output
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/outputs/Guided_Chest_CT_LeJEPA_V2/model_checkpoints/iter_50000/
+  use_pretrained: false                     # load from local vit_ckpt_path (not HuggingFace)
+  drop_path_rate: 0.1                       # mild stochastic-depth reg (matches Stage 2)
+
+# --- Data Processing ---
+# z_score matches the 2S pretrain (CTInferenceTransform in load_hf/lejepa_2s.py):
+#   clamp [-997, 888] -> [0,1] -> z-score with mean=-142.39, std=360.97 (0-1 scaled).
+dataset:
+  normalization_mode: "z_score"
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+  num_channels: 1
+  max_slices: 256                     # cap z-axis slice count (bounds DDP per-batch compute skew); >256 trilinear-resampled in raw-HU space
+
+# --- DataLoader ---
+validation:
+  dataset_format: "webdataset"
+  train_tar_pattern: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/shards-w*.tar
+  num_workers: 4
+
+  # Validation: 300 patient-disjoint vols from CT-RATE_train_hu (LEAK FIX -- NOT
+  # the 992 test pool). fair_train_split_val.txt is patient-disjoint from the 992
+  # fair-valid test (verified 2026-07-13, make_fair_train_split.py Protocol A).
+  val_dataset_format: "npy"
+  val_data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_hu/
+  val_label_csv: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_allowed_volumes_path: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/fair_train_split_val.txt
+  val_max_patients: 300
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"              # find body mask, take squared ROI
+  extract_patches: false              # no-op for training; the patch path is gated by use_patch_pooling above
+
+crops:
+  global_crops_size: 256              # target resolution for ROI alignment (matches 2S pretrain crop)
+
+# --- Required placeholders (not used by e2e training but kept for config-loader parity) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_sota_full
+  log_dir: logs
+  e2e_save_dir: checkpoints
+
+dino_head:
+  out_dim: 65536
+  norm_last_layer: true
+  hidden_dim: 2048
+  bottleneck_dim: 256
+  nlayers: 3

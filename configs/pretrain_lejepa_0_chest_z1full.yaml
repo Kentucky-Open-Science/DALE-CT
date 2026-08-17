@@ -1,0 +1,134 @@
+# =============================================================================
+# LeJEPA Pre-Training Configuration — DALE-CT-0 on the FULL chest pool (Z1 store)
+# =============================================================================
+# Public weight-release run. Pure-SSL LeJEPA + SIGReg (no aux head) on the full
+# 287,302-case chest-CT pool (all 21 train_ssl sources minus license-withheld
+# lola11 + covid_ct), from the full-pool Z1 rechunk store.
+#
+# Key changes vs the single-source z1 config (the 84k institutional
+# run):
+#   * Store  -> multi-source chest-CT_z1_full (multi-source zarr tree, 296,429
+#     cases; 21 sources after withhold).
+#   * source -> 'all' (multi-source pool) + withhold_sources [lola11, covid_ct].
+#     The loader now builds per-case paths from each row's `source` column.
+#   * norm  -> zscore (was div1000), using the 2026-07-13 full-pool foreground
+#     fit (voxel_stats.json): mean -25.03, std 246.87, clip [p0_5, p99_5]=
+#     [-940.8, 923.1]. Loader clips+rescales to [0,1]; augmentor applies
+#     v2.Normalize(mean=[(mean-clip_min)/range], std=[std/range]) ~= [0.4913,
+#     0.1325]. EVAL/EMBED CONFIGS MUST REUSE THESE EXACT VALUES.
+#   * depth-aware 3-slice slab (slab_len 3, stride 3) — unchanged.
+#   * Fresh from scratch (use_pretrained false). Release license CC BY-NC-SA 4.0.
+#
+# 3 epochs = 3 * total_slabs // 384. total_slabs = sum(floor(n_slices/3)) over
+# the eligible cases — computed by the sbatch pre-flight (see
+# the training launcher). Confirmed by smoke pre-flight (job
+# 195840): 287,252 eligible cases / 24,493,752 slabs -> 1 epoch = 63,785 iters,
+# so 3 epochs = 191,357 iters, warmup 11,290 (~5.9%). Run on 2 nodes x 8 H100
+# (16 GPUs) at batch_size_per_gpu 24 -> global batch 384 (paper-matched); ~2x
+# the throughput of 1 node. Submit the chain once the 2-node smoke passes.
+#
+# local_cache_dirs='' is REQUIRED: direct /project reads (validated; copytree/
+# prewarm all failed). Pool is chest-gated at ingest (99.95% chest); tcia_ldct's
+# ~150 liver scans are the "wiggle room".
+# =============================================================================
+
+# --- Experiment Identity ---
+wandb:
+  project: "DALE-CT"
+  run_name: "LeJEPA-0-chest-z1full"
+  mode: "offline"                      # sync from login node (offline during run)
+
+# --- LeJEPA Hyperparameters ---
+sigreg:
+  num_slices: 1024
+  knots: 17
+  lejepa_lambda: 0.02
+
+# --- Projector Architecture ---
+projector:
+  proj_dim: 124
+  proj_hidden_dim: 2048
+
+# --- Distributed Training ---
+distribution:
+  type: ddp
+  mixed_precision: bf16
+  downcast_bf16: 'no'
+
+# --- Training Loop ---
+train:
+  model_name: LeJEPA_0_chest_z1full       # full chest pool, z-score, fresh run
+  model_type: Guided-Chest-CT-LeJEPA-V2
+  batch_size_per_gpu: 24              # global 384 on 16 GPUs (2 nodes x 8, 24/gpu — paper-matched)
+  max_iterations: 191357              # 3 epochs = 3 * total_slabs(24,493,752) // 384  [preflight job 195840]
+  gradient_checkpointing_enable: false
+  use_lora: false
+  clip_grad: 3.0
+  dataloader_type: multisource_zarr     # zarr-native multi-source loader
+  warmup_iterations: 11290            # ~5.9% of max_iterations (3 epochs)  [preflight job 195840]
+  freeze_backbone_layers: 0
+  num_workers: 12
+  use_pretrained: false
+  generate_samples: false             # sample viz disabled in public release
+  lr: 2.0e-04                         # paper peak lr
+  min_lr: 1.0e-05
+  weight_decay: 0.04
+  saveckp_freq: 1000                  # halves save overhead vs 500 (~14%->~7%); index-slice
+                                     # resume makes the larger ~8min skip-bound cheap
+  use_weightwatcher: false
+  num_samples_to_generate: 0
+  seed: 42                            # fixes DistributedSampler shuffle across runs (resume-safe)
+  max_train_seconds: 41400            # 11.5 h < 12 h defq wall -> clean checkpoint before kill
+
+# --- Multi-Crop Augmentation ---
+crops:
+  global_crops_scale: [0.6, 1.0]
+  global_crops_number: 2
+  global_crops_size: 256
+  local_crops_scale: [0.3, 0.6]
+  local_crops_number: 8
+  guidance_probability: 0.80
+  local_crops_size: 144
+  gamma_prob: 0.8
+  gamma_range: [0.9, 1.1]
+  use_rex_guidance: false             # no ReX data -> TS-only guidance
+
+# --- Dataset ---
+dataset:
+  gpu_augmentations: true
+  # Full-pool Z1 re-chunked store ([512,512,1] chunks; 296,429 cases, 32 sources):
+  cases_root: /app/data/multisource_z1_full
+  manifest_path: /app/data/multisource_z1_full/manifest.parquet
+  source: all                        # all 21 train_ssl sources (multi-source pool)
+  withhold_sources: [lola11, covid_ct]   # license-blocked: DUA / no license
+  num_workers: 24                     # 8 GPUs x 24 = 192 workers <= 224 logical CPUs/node
+  prefetch_factor: 4
+  dataloader_timeout: 1800            # s; worker-hang crash -> afterany resume from ckpt
+  slab_len: 3                         # 3-slice depth-aware slab (3 independent [512,512,1] chunks)
+  stride: 3                           # non-overlapping tiling
+  mask_size: 128                      # organ_mask downsampled to 128x128 (matches TS pipeline)
+  norm_type: zscore                   # clip + rescale[0,1] (loader) -> Normalize (augmentor)
+  clip_min: -940.8                    # p0.5 of full-pool foreground HU (voxel_stats.json)
+  clip_max: 923.1                     # p99.5 of full-pool foreground HU (voxel_stats.json)
+  mean_hu: -25.03                     # full-pool foreground mean (voxel_stats.json)
+  std_hu: 246.87                      # full-pool foreground std (voxel_stats.json)
+  require_organ_mask: true            # organ masks exist pool-wide -> keeps ~all 287,302 cases
+  case_cache_cap: 512                 # per-worker LRU of opened zarr arrays
+  local_cache_dirs: ''                # REQUIRED empty: direct /project reads (copytree/prewarm all failed)
+  shuffle_buffer: 100                 # unused (map-style loader) — kept for config parity
+  rex_ratio: 0.0                      # no ReX mixing
+
+# --- Auxiliary Supervision (DISABLED for DALE-CT-0) ---
+auxiliary:
+  enable: false
+  head_type: soft_label_supervision
+  aux_weight: 0.1
+
+# --- Output Directories ---
+output_folders:
+  train_checkpoint_dir: train_checkpoints
+  model_checkpoint_dir: model_checkpoints
+  training_samples_dir: training_samples
+  training_results_dir: training_results
+  log_dir: log_files
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs

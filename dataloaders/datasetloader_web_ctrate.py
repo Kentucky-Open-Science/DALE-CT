@@ -232,6 +232,12 @@ class CTWebDatasetLoader:
     def _build_loader(self):
         slab_size = getattr(self.cfg.dataset, 'slab_size', 0.0)
         rex_ratio = getattr(self.cfg.dataset, 'rex_ratio', 0.5)
+        # When True, stream normal (shards-*.tar) + abnormal (rex-shards-*.tar)
+        # together at their natural shard-count prevalence, bypassing the
+        # rex_ratio RandomMix entirely (no ReX-driven oversampling). ReX
+        # supervision/guidance are disabled separately via auxiliary.use_rex /
+        # crops.use_rex_guidance. Used by DALE-CT-1S-v2 (ReX-free).
+        natural_rex_mix = getattr(self.cfg.dataset, 'natural_rex_mix', False)
 
         std_urls = glob.glob(os.path.join(self.dataset_path, "shards-*.tar"))
         rex_urls = glob.glob(os.path.join(self.dataset_path, "rex-shards-*.tar"))
@@ -239,28 +245,41 @@ class CTWebDatasetLoader:
         if std_urls: random.shuffle(std_urls)
         if rex_urls: random.shuffle(rex_urls)
 
-        datasets, probs = [], []
-        if std_urls:
-            datasets.append(self._build_single_dataset(std_urls, slab_size))
-            probs.append(1.0 - rex_ratio if rex_urls else 1.0)
-        if rex_urls:
-            datasets.append(self._build_single_dataset(rex_urls, slab_size))
-            probs.append(rex_ratio if std_urls else 1.0)
-
-        if not datasets:
-            raise ValueError(f"🚨 No 'shards-*.tar' files found in {self.dataset_path}. Check your YAML config!")
-
-        if len(datasets) == 2:
-            # Pass the operations as sequential arguments to DataPipeline
-            dataset = wds.DataPipeline(
-                wds.RandomMix(datasets, probs),
-                wds.shuffle(self.shuffle_buffer),
-                wds.map(_extract_fields),
-                wds.map(self._transform_with_masks)
-            )
+        if natural_rex_mix:
+            # Single resampled WebDataset over both shard sets -> samples shards
+            # uniformly, giving natural normal:abnormal prevalence by shard count
+            # (rex_ratio is ignored on this path).
+            all_urls = std_urls + rex_urls
+            if not all_urls:
+                raise ValueError(f"🚨 No 'shards-*.tar' or 'rex-shards-*.tar' files found in {self.dataset_path}. Check your YAML config!")
+            random.shuffle(all_urls)
+            dataset = (self._build_single_dataset(all_urls, slab_size)
+                       .shuffle(self.shuffle_buffer)
+                       .map(_extract_fields)
+                       .map(self._transform_with_masks))
         else:
-            # A single WebDataset object still supports the fluent chaining API
-            dataset = datasets[0].shuffle(self.shuffle_buffer).map(_extract_fields).map(self._transform_with_masks)
+            datasets, probs = [], []
+            if std_urls:
+                datasets.append(self._build_single_dataset(std_urls, slab_size))
+                probs.append(1.0 - rex_ratio if rex_urls else 1.0)
+            if rex_urls:
+                datasets.append(self._build_single_dataset(rex_urls, slab_size))
+                probs.append(rex_ratio if std_urls else 1.0)
+
+            if not datasets:
+                raise ValueError(f"🚨 No 'shards-*.tar' files found in {self.dataset_path}. Check your YAML config!")
+
+            if len(datasets) == 2:
+                # Pass the operations as sequential arguments to DataPipeline
+                dataset = wds.DataPipeline(
+                    wds.RandomMix(datasets, probs),
+                    wds.shuffle(self.shuffle_buffer),
+                    wds.map(_extract_fields),
+                    wds.map(self._transform_with_masks)
+                )
+            else:
+                # A single WebDataset object still supports the fluent chaining API
+                dataset = datasets[0].shuffle(self.shuffle_buffer).map(_extract_fields).map(self._transform_with_masks)
 
         def _worker_init_fn(worker_id):
             import cv2, torch

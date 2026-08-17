@@ -1,0 +1,51 @@
+# =============================================================================
+# Linear Probe Grid Search: tiled_5cut embeddings
+# =============================================================================
+data:
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+  train_embedding_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/v2_embeddings/train/tiled_5cut
+  val_embedding_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/v2_embeddings/valid/tiled_5cut
+
+experiment:
+  seed: 42
+  total_steps: 15000
+  eval_freq: 2500
+  batch_size: 16
+  input_dim: 1024
+  num_classes: 18
+  save_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/ablation_linear_probe/tiled_5cut
+  pooling_mode: embedding
+  pooling_schemes:
+    - average
+    - max
+    - learned_attention
+  learning_rates:
+    - 0.1
+    - 0.03
+    - 0.01
+    - 0.003
+  ct_rate_classes:
+    - Medical material
+    - Arterial wall calcification
+    - Cardiomegaly
+    - Pericardial effusion
+    - Coronary artery wall calcification
+    - Hiatal hernia
+    - Lymphadenopathy
+    - Emphysema
+    - Atelectasis
+    - Lung nodule
+    - Lung opacity
+    - Pulmonary fibrotic sequela
+    - Pleural effusion
+    - Mosaic attenuation pattern
+    - Peribronchial thickening
+    - Consolidation
+    - Bronchiectasis
+    - Interlobular septal thickening
+
+wandb:
+  project: CT-RATE-huggingface-downloads-Ablation
+  group: multimethod_linear_probe_tiled_5cut
+  mode: offline

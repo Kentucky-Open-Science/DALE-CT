@@ -21,7 +21,7 @@ dataset:
 # --- Data Source ---
 validation:
   dataset_format: "webdataset"          # "webdataset" for tar shards, "npy" for .npy files
-  tar_pattern: /path/to/CT-RATE/tarfiles/*.tar  # WebDataset tar shard pattern
+  tar_pattern: /path/to/CT-RATE-huggingface-downloads/tarfiles/*.tar  # WebDataset tar shard pattern
   num_workers: 8
 
 # --- Inference Mode ---

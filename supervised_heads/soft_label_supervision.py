@@ -13,9 +13,13 @@ class SoftLabelSupervisionHead(nn.Module):
         self.num_ts_classes = 118
         self.num_rex_classes = 14
 
+        # TS-only mode: skip the ReX head/loss entirely (no Rex supervision).
+        self.use_rex = getattr(config.auxiliary, 'use_rex', True)
+
         # Independent heads for TotalSegmentator and ReX
         self.ts_head = nn.Linear(input_dim, self.num_ts_classes)
-        self.rex_head = nn.Linear(input_dim, self.num_rex_classes)
+        if self.use_rex:
+            self.rex_head = nn.Linear(input_dim, self.num_rex_classes)
 
         self.aux_weight = getattr(config.auxiliary, 'aux_weight', 1.0)
 
@@ -43,11 +47,13 @@ class SoftLabelSupervisionHead(nn.Module):
 
         # 3. Register as buffers so PyTorch manages their device placement
         self.register_buffer('ts_pos_weight', torch.tensor(ts_weights_list, dtype=torch.float32))
-        self.register_buffer('rex_pos_weight', torch.tensor(rex_weights_list, dtype=torch.float32))
+        if self.use_rex:
+            self.register_buffer('rex_pos_weight', torch.tensor(rex_weights_list, dtype=torch.float32))
 
         # 4. Initialize the loss functions with reduction='none' and our custom weights
         self.criterion_ts = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.ts_pos_weight)
-        self.criterion_rex = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.rex_pos_weight)
+        if self.use_rex:
+            self.criterion_rex = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.rex_pos_weight)
 
     def forward(self, features, labels, is_rex):
         cls_tokens = features[:, 0, :]
@@ -65,28 +71,36 @@ class SoftLabelSupervisionHead(nn.Module):
         ).mean()
 
         # --- ReX Loss (Uses criterion_rex and is masked) ---
-        rex_cls_logits = self.rex_head(cls_tokens)
-        rex_patch_logits = self.rex_head(patch_tokens)
+        if self.use_rex:
+            rex_cls_logits = self.rex_head(cls_tokens)
+            rex_patch_logits = self.rex_head(patch_tokens)
 
-        raw_loss_rex_cls = self.criterion_rex(rex_cls_logits, labels['rex_crop'])
-        raw_loss_rex_patch = self.criterion_rex(
-            rex_patch_logits.reshape(-1, self.num_rex_classes),
-            labels['rex_patch'].reshape(-1, self.num_rex_classes)
-        )
+            raw_loss_rex_cls = self.criterion_rex(rex_cls_logits, labels['rex_crop'])
+            raw_loss_rex_patch = self.criterion_rex(
+                rex_patch_logits.reshape(-1, self.num_rex_classes),
+                labels['rex_patch'].reshape(-1, self.num_rex_classes)
+            )
 
-        # Apply the mask (Same as before)
-        rex_mask_cls = is_rex.unsqueeze(1).float()
-        rex_mask_patch = is_rex.repeat_interleave(num_patches).unsqueeze(1).float()
+            # Apply the mask (Same as before)
+            rex_mask_cls = is_rex.unsqueeze(1).float()
+            rex_mask_patch = is_rex.repeat_interleave(num_patches).unsqueeze(1).float()
 
-        valid_cls_count = rex_mask_cls.sum() + 1e-8
-        valid_patch_count = rex_mask_patch.sum() + 1e-8
+            valid_cls_count = rex_mask_cls.sum() + 1e-8
+            valid_patch_count = rex_mask_patch.sum() + 1e-8
 
-        loss_rex_cls = (raw_loss_rex_cls * rex_mask_cls).sum() / (valid_cls_count * self.num_rex_classes)
-        loss_rex_patch = (raw_loss_rex_patch * rex_mask_patch).sum() / (valid_patch_count * self.num_rex_classes)
+            loss_rex_cls = (raw_loss_rex_cls * rex_mask_cls).sum() / (valid_cls_count * self.num_rex_classes)
+            loss_rex_patch = (raw_loss_rex_patch * rex_mask_patch).sum() / (valid_patch_count * self.num_rex_classes)
 
-        # --- Combine ---
-        loss_cls = 0.5 * (loss_ts_cls + loss_rex_cls)
-        loss_patch = 0.5 * (loss_ts_patch + loss_rex_patch)
+            # --- Combine (TS + ReX, 0.5/0.5) ---
+            loss_cls = 0.5 * (loss_ts_cls + loss_rex_cls)
+            loss_patch = 0.5 * (loss_ts_patch + loss_rex_patch)
+        else:
+            loss_rex_cls = torch.zeros((), device=features.device)
+            loss_rex_patch = torch.zeros((), device=features.device)
+            # --- Combine (TS only) ---
+            loss_cls = loss_ts_cls
+            loss_patch = loss_ts_patch
+
         total_aux_loss = 0.5 * loss_cls + 0.5 * loss_patch
 
         stats = {

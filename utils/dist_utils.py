@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 
 from accelerate import Accelerator
 
@@ -57,10 +58,15 @@ def initialize_ddp_accelerator_from_config(config) -> Accelerator:
             print(f"Rank {rank}/{world_size}, Local rank: {local_rank}")
         
         # Key fix: Initialize with device_id parameter
+        # NCCL op timeout defaults to 600s; allow overriding via env to absorb
+        # /project I/O stalls on the shared filesystem (default preserves prior
+        # behavior).
+        nccl_timeout_s = int(os.environ.get('NCCL_TIMEOUT_S', '600'))
         dist.init_process_group(
             backend='nccl',
             rank=rank,
             world_size=world_size,
+            timeout=datetime.timedelta(seconds=nccl_timeout_s),
             device_id=device  # This eliminates the warning!
         )
         

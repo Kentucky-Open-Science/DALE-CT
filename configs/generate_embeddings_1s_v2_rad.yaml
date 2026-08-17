@@ -1,0 +1,51 @@
+# =============================================================================
+# DALE-CT-1S-v2 Embedding Generation — RAD-ChestCT (npy, full 3,630-set)
+# =============================================================================
+# Legacy single-method script (ctrate_generate_embeddings.py) — apples-to-apples
+# with dale_ct_1s/2s (same cropped_global crop, same z_score CT-RATE constants).
+# RAD is NOT fair-subset-filtered (RAD uses its own trn/val/tst split in the
+# probe); the fair config points directly at this full RAD dir. Saves .npy
+# directly to main_output/<name>.npy.
+#
+# Usage: python scripts/ctrate_generate_embeddings.py --config_file <this>
+# =============================================================================
+train:
+  model_type: Guided-Chest-CT-LeJEPA-V2   # 2S arch (patch16, 256/144); 1S-v2 inherits it
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/public/outputs/LeJEPA_1S_v2/model_checkpoints/iter_66667/
+  use_pretrained: false                    # load from local checkpoint (not HuggingFace)
+
+dataset:
+  # Z-Score normalization — same CT-RATE constants as 1s/2s RAD embeds
+  # (dale_ct_1s RAD dir is lejepa_3D_50k_swa_cropped_global/cls, same z_score).
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+
+# --- Data Source ---
+validation:
+  dataset_format: "npy"                    # RAD-ChestCT = pre-extracted .npz volumes (3,630)
+  data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/RAD-ChestCT/
+  num_workers: 8
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"                    # body-mask squared ROI (same as 1s/2s)
+  extract_patches: false                   # CLS only -> (num_slices, 1024)
+
+crops:
+  global_crops_size: 256                    # 2S/0/1S-v2 global crop size (patch16 -> 16x16 grid)
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_1s_v2_cropped_global/cls
+
+# --- Required placeholders (config loader; not used by embedding generation) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+lora_config:
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1

@@ -1,5 +1,5 @@
 """
-LeJEPA Self-Supervised Pre-Training Entry Point for CT-RATE.
+LeJEPA Self-Supervised Pre-Training Entry Point for CT-RATE-huggingface-downloads.
 
 Usage:
     python train_lejepa.py --train_config_file configs/pretrain_lejepa_0.yaml
@@ -7,6 +7,7 @@ Usage:
 import argparse
 
 from dataloaders.datasetloader_web_ctrate import CTWebDatasetLoader
+from dataloaders.datasetloader_multisource_zarr import CTMultisourceZarrLoader
 from lejepa_core.main_lejepa_trainer import Trainer as MainTrainer
 from utils.config import setup as setup_config
 from utils.dist_utils import (
@@ -38,7 +39,7 @@ def main(config_file):
         if "wandb" in config and config.wandb is not None:
             write_to_main_log(accelerator=accelerator, result="Starting WandB")
             setup_wandb(config, accelerator)
-        write_to_main_log(accelerator=accelerator, result="Starting LeJEPA training on CT-RATE")
+        write_to_main_log(accelerator=accelerator, result="Starting LeJEPA training on CT-RATE-huggingface-downloads")
         write_to_main_log(accelerator=accelerator, result=f"Running with {accelerator.num_processes} processes")
         write_to_main_log(accelerator=accelerator, result=f"Mixed precision: {accelerator.mixed_precision}")
 
@@ -49,7 +50,13 @@ def main(config_file):
     write_to_main_log(accelerator=accelerator, result=f"Accelerator initialized. Device: {device}, World Size: {world_size}")
     write_to_main_log(accelerator=accelerator, result=f"Enabled Distributed Strategy: {actual_dist_type}")
 
-    train_data = CTWebDatasetLoader(cfg=config)
+    dataloader_type = getattr(config.train, 'dataloader_type', 'web_ctrate')
+    if dataloader_type == 'multisource_zarr':
+        train_data = CTMultisourceZarrLoader(cfg=config)
+    elif dataloader_type == 'web_ctrate':
+        train_data = CTWebDatasetLoader(cfg=config)
+    else:
+        raise ValueError(f"Unknown dataloader_type: {dataloader_type}")
     trainer = MainTrainer(config=config, accelerator=accelerator, dataset=train_data)
     trainer.train()
 
@@ -63,7 +70,7 @@ def main(config_file):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='LeJEPA Self-Supervised Pre-Training on CT-RATE')
+    parser = argparse.ArgumentParser(description='LeJEPA Self-Supervised Pre-Training on CT-RATE-huggingface-downloads')
     parser.add_argument('--train_config_file', type=str, dest='train_config_file',
                         default='ssl_default_config', help='Configuration file for training parameters')
     args = parser.parse_args()

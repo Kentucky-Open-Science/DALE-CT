@@ -1,0 +1,52 @@
+# =============================================================================
+# DALE-CT-0 chest Embedding Generation — CT-RATE VALID (npy, full 3,002-set)
+# =============================================================================
+# Legacy single-method script (ctrate_generate_embeddings.py) — apples-to-apples
+# with dale_ct_1s/2s/1s_v2 (same cropped_global crop). Saves .npy directly to
+# main_output/<name>.npy.
+#
+# vit_ckpt_path uses the __VIT_CKPT_PATH__ placeholder (resolved at runtime by
+# run_dale0_chest_embed.sh to the latest iter_*/model.safetensors).
+#
+# Usage: python scripts/ctrate_generate_embeddings.py --config_file <this>
+# =============================================================================
+train:
+  model_type: Guided-Chest-CT-LeJEPA-V2   # 2S arch (patch16, 256/144); chest inherits it
+  vit_ckpt_path: __VIT_CKPT_PATH__         # resolved at runtime by run_dale0_chest_embed.sh
+  use_pretrained: false                    # load from local checkpoint (not HuggingFace)
+
+dataset:
+  # Z-Score normalization — byte-identical to DALE-CT-0 chest pre-training.
+  # normalization_mode OMITTED -> defaults to 'z_score'.
+  clip_min: -940.8
+  clip_max: 923.1
+  mean_hu: -25.03
+  std_hu: 246.87
+
+# --- Data Source ---
+validation:
+  dataset_format: "npy"                    # CT-RATE valid = pre-extracted .npy volumes
+  data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_valid_hu/
+  num_workers: 8
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"                    # body-mask squared ROI (same as 1s/2s/1s_v2)
+  extract_patches: false                   # CLS only -> (num_slices, 1024)
+
+crops:
+  global_crops_size: 256                    # 2S/0/1S-v2 global crop size (patch16 -> 16x16 grid)
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_0_chest_cropped_global/valid
+
+# --- Required placeholders (config loader; not used by embedding generation) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+lora_config:
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1

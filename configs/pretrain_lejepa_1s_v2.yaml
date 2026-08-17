@@ -1,0 +1,121 @@
+# =============================================================================
+# LeJEPA Pre-Training Configuration — DALE-CT-1S-v2 (TS-only, dense+global soft labels)
+# =============================================================================
+# "2S architecture + 2S's dense (patch) + global (CLS) TotalSegmentator soft
+# labels, with ReX removed from everywhere." Identical to pretrain_lejepa_2s.yaml
+# except ReX is fully inert:
+#   - auxiliary.use_rex: false        -> no ReX head / no ReX loss (TS-only
+#                                       dense+global soft labels, 0.5*cls + 0.5*patch)
+#   - crops.use_rex_guidance: false   -> local crops center on TS coords, never ReX
+#   - dataset.natural_rex_mix: true   -> stream normal + abnormal shards together
+#                                       at natural prevalence (~17% abnormal by
+#                                       shard count: 323 rex / 1894 total), no
+#                                       rex_ratio oversampling (rex_ratio ignored)
+# ReX masks are still decoded by the augmentor (cheap zeros on normal shards) but
+# never enter the loss, crop selection, or sampling. Architecture, crop sizes
+# (256/144), slab, SIGReg (λ=0.02), aux weight (0.1), and all optimizer
+# hyperparameters are identical to 2S.
+#
+# Hardware tweak (8xH100 defq, 80GB vs 2S's 8xH200, 141GB):
+#   - batch_size_per_gpu: 48  (proven to fit vit-large @ 256/144 on H100 80GB
+#                              without gradient checkpointing — see
+#                              the multi-source configs; 2S used 64 on H200)
+#   - max_iterations: 66667   (preserves 2S's image budget: 48*8*66667 = 25,600,128
+#                              ≈ 2S's 64*8*50000 = 25,600,000)
+#   - warmup_iterations: 6667 (scaled proportionately — 10% of max_iter, same
+#                              fraction as 2S's 5000/50000)
+#   - max_train_seconds: 41400 (11.5h < 12h defq wall -> clean checkpoint before
+#                              kill; chain N afterany jobs to reach 66667 iters)
+#
+# Usage: python train_lejepa.py --train_config_file configs/pretrain_lejepa_1s_v2.yaml
+# =============================================================================
+
+# --- Experiment Identity ---
+wandb:
+  project: "CT-Rate-LeJEPA"
+  run_name: "LeJEPA-1S-v2"
+  mode: "offline"                      # defq compute nodes have no egress; `wandb sync` from login node after
+
+# --- LeJEPA Hyperparameters ---
+sigreg:
+  num_slices: 1024
+  knots: 17
+  lejepa_lambda: 0.02
+
+# --- Projector Architecture ---
+projector:
+  proj_dim: 124
+  proj_hidden_dim: 2048
+
+# --- Distributed Training ---
+distribution:
+  type: ddp
+  mixed_precision: bf16
+  downcast_bf16: 'no'
+
+# --- Training Loop ---
+train:
+  model_name: LeJEPA_1S_v2
+  model_type: Guided-Chest-CT-LeJEPA-V2
+  batch_size_per_gpu: 48               # H100 80GB (2S used 64 on H200)
+  max_iterations: 66667                # 48*8*66667 = 25.6M images (= 2S's 64*8*50000)
+  gradient_checkpointing_enable: false
+  use_lora: false
+  clip_grad: 3.0
+  dataloader_type: web_ctrate
+  warmup_iterations: 6667              # 10% of max_iter (2S: 5000/50000 = 10%)
+  freeze_backbone_layers: 0
+  num_workers: 12
+  use_pretrained: false
+  generate_samples: true
+  lr: 3.0e-04
+  min_lr: 3.0e-05
+  weight_decay: 0.04
+  saveckp_freq: 1000                  # tighter than 2S's 2000 for defq 12h chained-job resume safety
+  use_weightwatcher: false
+  num_samples_to_generate: 20
+  max_train_seconds: 41400            # 11.5h < 12h defq wall -> clean checkpoint; chain afterany jobs to finish
+
+# --- Multi-Crop Augmentation (identical to 2S/0: 256/144) ---
+crops:
+  global_crops_scale: [0.6, 1.0]
+  global_crops_number: 2
+  global_crops_size: 256
+  local_crops_scale: [0.3, 0.6]
+  local_crops_number: 8
+  guidance_probability: 0.80
+  local_crops_size: 144
+  gamma_prob: 0.8
+  gamma_range: [0.9, 1.1]
+  use_rex_guidance: false             # ReX-free: local crops center on TS coords only
+
+# --- Dataset ---
+dataset:
+  gpu_augmentations: true
+  dataset_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_3
+  num_workers: 4
+  shuffle_buffer: 100
+  slab_size: 12.0
+  prefetch_factor: 2
+  rex_ratio: 0.0                      # ignored under natural_rex_mix; kept for clarity (no oversampling)
+  natural_rex_mix: true               # stream normal + abnormal shards at natural prevalence (no ReX mixing)
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+
+# --- Auxiliary Supervision (ENABLED: Single-Source TS, dense+global soft labels) ---
+auxiliary:
+  enable: true
+  head_type: soft_label_supervision
+  aux_weight: 0.1                     # λ_aux = 0.1 (same as 2S)
+  use_rex: false                      # ReX-free: TS-only dense (patch) + global (CLS) soft labels
+
+# --- Output Directories ---
+output_folders:
+  train_checkpoint_dir: train_checkpoints
+  model_checkpoint_dir: model_checkpoints
+  training_samples_dir: training_samples
+  training_results_dir: training_results
+  log_dir: log_files
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs

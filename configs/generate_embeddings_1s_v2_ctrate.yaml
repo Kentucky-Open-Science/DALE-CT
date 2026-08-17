@@ -1,0 +1,55 @@
+# =============================================================================
+# DALE-CT-1S-v2 Embedding Generation — CT-RATE TRAIN (full set, WebDataset)
+# =============================================================================
+# Legacy single-method script (ctrate_generate_embeddings.py) — apples-to-apples
+# with dale_ct_1s/2s: same MultiScaleSliceProcessor cropped_global body-mask crop
+# (NOT the multimethod MultiMethodProcessor cropped_256 crop).
+#
+# The script saves .npy directly to output_dir/<name>.npy (main_output), so
+# main_output = .../lejepa_1s_v2_cropped_global/train matches the dale_ct_1s
+# layout that build_fair_subset.sh symlinks from.
+#
+# Usage: python scripts/ctrate_generate_embeddings.py --config_file <this>
+# =============================================================================
+train:
+  model_type: Guided-Chest-CT-LeJEPA-V2   # 2S arch (patch16, 256/144); 1S-v2 inherits it
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/public/outputs/LeJEPA_1S_v2/model_checkpoints/iter_66667/
+  use_pretrained: false                    # load from local checkpoint (not HuggingFace)
+
+dataset:
+  # Z-Score normalization — byte-identical to 1S-v2 pre-training.
+  # normalization_mode is OMITTED -> defaults to 'z_score' (the training-time
+  # math: clamp[clip_min,clip_max] -> 0-1 -> (x-norm_mean)/norm_std). Do NOT set
+  # 'dinomx' (that z-scores raw HU directly = WRONG for 1S-v2).
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+
+# --- Data Source ---
+validation:
+  dataset_format: "webdataset"             # CT-RATE train = tar shards (final_2 = full set)
+  tar_pattern: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/*.tar
+  num_workers: 8
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"                    # body-mask squared ROI (same as 1s/2s)
+  extract_patches: false                   # CLS only -> (num_slices, 1024), matches dale_ct_1s/2s
+
+crops:
+  global_crops_size: 256                    # 2S/0/1S-v2 global crop size (patch16 -> 16x16 grid)
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_1s_v2_cropped_global/train
+
+# --- Required placeholders (config loader; not used by embedding generation) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+lora_config:
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1

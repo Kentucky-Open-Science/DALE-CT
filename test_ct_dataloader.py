@@ -193,7 +193,7 @@ def plot_and_save_single_sample(crops_dict, cfg, batch_idx, save_idx, output_dir
     print(f"  -> Saved {save_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Scan CT-RATE dataloader for ReX abnormalities and plot them.")
+    parser = argparse.ArgumentParser(description="Scan CT-RATE-huggingface-downloads dataloader for ReX abnormalities and plot them.")
     parser.add_argument("--config", type=str, required=True, help="Path to the YAML config file")
     parser.add_argument("--batches", type=int, default=50, help="Max number of batches to search through")
     parser.add_argument("--num_save", type=int, default=5, help="Number of ReX positive samples to find and plot")

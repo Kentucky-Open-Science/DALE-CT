@@ -2,7 +2,9 @@ import os
 import shutil
 import logging
 import re
+import random
 from typing import Optional, Tuple
+import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate.state import DistributedType
@@ -81,7 +83,20 @@ class DistributedCheckpointManager:
              
             optimizer_path = os.path.join(current_ckpt_dir, "optimizer.pt")
             torch.save(self.optimizer.state_dict(), optimizer_path)
-            
+
+            # Save RNG states (torch CPU, CUDA, python random, numpy) so augmentation
+            # RNG continues seamlessly across resume -> eliminates the post-resume
+            # SIGReg spike (augmentor uses the global RNGs; the sampler uses its own
+            # generator, so resume-skip does not perturb these).
+            rng_state = {
+                "torch_cpu": torch.get_rng_state(),
+                "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                "python_random": random.getstate(),
+                "numpy": np.random.get_state(),
+            }
+            rng_path = os.path.join(current_ckpt_dir, "rng.pt")
+            torch.save(rng_state, rng_path)
+
             # Save scheduler if available
             if self.scheduler:
                 scheduler_path = os.path.join(current_ckpt_dir, "scheduler.pt")
@@ -224,7 +239,42 @@ class DistributedCheckpointManager:
                 optimizer_path = os.path.join(load_dir, "optimizer.pt")
                 optimizer_state = torch.load(optimizer_path, weights_only=False, map_location='cpu')
                 self.optimizer.load_state_dict(optimizer_state)
-                
+
+                # Optimizer-load sanity: log a state-tensor norm + AdamW step counter
+                # to confirm momentum/step actually restored (catches wrap/device issues).
+                try:
+                    opt_sd = self.optimizer.state_dict()['state']
+                    if opt_sd:
+                        first_key = next(iter(opt_sd))
+                        st = opt_sd[first_key]
+                        step = st.get('step', None)
+                        exp_avg_norm = float(st['exp_avg'].float().norm()) if 'exp_avg' in st else None
+                        write_to_main_log(
+                            accelerator=self.accelerator,
+                            result=f"[Rank {self.rank}] Optimizer restored: param0 step={step}, exp_avg_norm={exp_avg_norm}")
+                except Exception as se:
+                    write_to_main_log(
+                        accelerator=self.accelerator, type='warning',
+                        result=f"[Rank {self.rank}] Optimizer sanity log skipped: {se}")
+
+                # Restore RNG states (must happen after model/optimizer load, before
+                # the first training iteration, so augmentation RNG is continuous).
+                rng_path = os.path.join(load_dir, "rng.pt")
+                if os.path.exists(rng_path):
+                    rng_state = torch.load(rng_path, weights_only=False, map_location='cpu')
+                    torch.set_rng_state(rng_state["torch_cpu"])
+                    if rng_state.get("torch_cuda") is not None and torch.cuda.is_available():
+                        torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                    random.setstate(rng_state["python_random"])
+                    np.random.set_state(rng_state["numpy"])
+                    write_to_main_log(
+                        accelerator=self.accelerator,
+                        result=f"[Rank {self.rank}] RNG states restored from {rng_path}.")
+                else:
+                    write_to_main_log(
+                        accelerator=self.accelerator, type='warning',
+                        result=f"[Rank {self.rank}] No rng.pt in checkpoint; augmentation RNG will restart (pre-fix behavior).")
+
                 # Load scheduler if available
                 if self.scheduler:
                     scheduler_path = os.path.join(load_dir, "scheduler.pt")

@@ -406,7 +406,13 @@ def get_periodic_train_checkpointer(config, model, optimizer, accelerator, max_t
         accelerator=accelerator,
         max_to_keep=max_to_keep,
     )
-    start_iteration = checkpoint_manager.load_latest() + 1
+    # iter_N is written AFTER step N-1 completes (save() is called post-increment,
+    # after ssl_model(N-1) which runs optimizer.step internally): it means
+    # "N steps done, step N pending". So resume does step N. The previous `+ 1`
+    # skipped step N on every resume (lost update + lost batch). No checkpoint ->
+    # load_latest() returns -1 -> start at 0.
+    loaded = checkpoint_manager.load_latest()
+    start_iteration = 0 if loaded < 0 else loaded
     return start_iteration, checkpoint_manager
 
 

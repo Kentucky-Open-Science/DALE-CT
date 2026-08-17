@@ -1,0 +1,189 @@
+# =============================================================================
+# Error Bars — FAIR 5k-subset comparison (4 DALE-CT + 6 benchmarks)
+# =============================================================================
+# Same frozen-backbone linear-probe protocol as error_bars.yaml, but every model
+# is evaluated on the SAME CT-RATE 5k-subset (4,942 train / 992 test) so the
+# comparison is apples-to-apples. error_bars.yaml is NOT fair: the 4 DALE-CT
+# backbones there point at FULL CT-RATE (~46k train / 3,002 test) while
+# some in-house arms use the 5k-subset. This config fixes that.
+#
+# DALE-CT 4: ctrate_train/valid point at SYMLINK subset dirs
+#   (features/ctrate_fair_subset/<key>/{train,valid}) built by
+#   scripts/build_fair_subset.sh -- 4,942/992 symlinks into each backbone's full
+#   embedding dir. RAD is NOT subset-filtered (RAD uses its own trn/val/tst
+#   split) -> points at each backbone's existing full RAD dir.
+# Benchmarks 6: point at features/benchmark_fair_subset/<model>/... (populated
+#   by the 5k-subset extraction, configs/benchmark_embeddings_fair_subset.yaml).
+#
+# The 5k-subset = the base-names in the 5k-subset embedding dirs
+# (balanced_subset.n_patients=5000/1000, seed 42, first scan per patient). The
+# probe dataloader enforces the subset by which files exist; the 1000-patient
+# val draw is deterministic (seed 42), so all models here see an identical
+# train/val/test split. Bootstrap indices (ctrate_seed 2024) are shared across
+# models, so CIs are comparable to the existing v628/Z1/visreg_base_v2 5k-subset
+# aggregates (reused, not rerun).
+#
+# Output is ISOLATED under outputs/error_bars_fair_subset (does NOT clobber the
+# existing full-CT-RATE error_bars aggregates).
+# =============================================================================
+
+data:
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+  rad_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/RAD-ChestCT/rad_labels.csv
+  only_global: false
+
+models:
+  # --- 5 DALE-CT backbones: fair-subset symlinks (CT-RATE) + full RAD ---
+  dale_ct_0:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_0/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_0/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_base/cls
+  dale_ct_1s:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_1s/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_1s/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_3D_50k_swa_cropped_global/cls
+  dale_ct_2s:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_2s/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_2s/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_v2/cls_ctrate_zscore
+  dale_ct_1s_v2:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_1s_v2/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_1s_v2/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_1s_v2_cropped_global/cls
+  dinov2_finetuned:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dinov2_finetuned/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dinov2_finetuned/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/dinov2_finetuned/cls
+  dale_ct_0_chest:
+    # DALE-CT-0 chest (LeJEPA_0_chest_z1full, full chest pool, z-score). NEW key —
+    # does NOT overwrite the released dale_ct_0 (lejepa_base). CT-RATE points at
+    # fair_subset symlinks (built by build_fair_subset.sh); RAD = full RAD dir.
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_0_chest/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/dale_ct_0_chest/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_0_chest_cropped_global/cls
+
+  # --- 6 benchmarks: 5k-subset extraction under features/benchmark_fair_subset/ ---
+  rad_dino:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/rad_dino/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/rad_dino/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/rad_dino/rad
+  dinov3:
+    input_dim: 1024
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/dinov3/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/dinov3/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/dinov3/rad
+  colipri:
+    input_dim: 864
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/colipri/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/colipri/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/colipri/rad
+  ct_clip:
+    input_dim: 512
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_clip/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_clip/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_clip/rad
+  merlin:
+    input_dim: 2048
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/merlin/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/merlin/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/merlin/rad
+  ct_fm:
+    input_dim: 512
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_fm/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_fm/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/ct_fm/rad
+  levljepa_ct_raw:
+    input_dim: 864
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw/rad
+  levljepa_ct_pooled:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled/rad
+  levljepa_ct_raw_lr1e5:
+    input_dim: 864
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw_lr1e5/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw_lr1e5/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_raw_lr1e5/rad
+  levljepa_ct_pooled_lr1e5:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled_lr1e5/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled_lr1e5/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset/levljepa_ct_pooled_lr1e5/rad
+
+experiment:
+  split_seed: 42
+  total_steps: 15000
+  eval_freq: 2500
+  batch_size: 16
+  num_workers: 0
+  num_cache_workers: 8
+  input_dim: 1024
+  num_classes: 18
+  pooling_mode: "embedding"
+  pooling_schemes:
+    - "average"
+    - "max"
+    - "learned_attention"
+  learning_rates:
+    - 0.3
+    - 0.1
+    - 0.03
+    - 0.01
+    - 0.003
+    - 0.001
+  seeds: [0, 1, 2, 3, 4]
+  ct_rate_classes:
+    - "Medical material"
+    - "Arterial wall calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Coronary artery wall calcification"
+    - "Hiatal hernia"
+    - "Lymphadenopathy"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Mosaic attenuation pattern"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+  rad_chestct_classes:
+    - "Calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Hiatal hernia"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+    - "Lymphadenopathy"
+    - "Medical material"
+
+bootstrap:
+  n_resamples: 2000
+  ctrate_seed: 2024
+  rad_seed: 2025
+  ci_percentiles: [2.5, 97.5]
+  sample_round_dp: 6
+
+output:
+  root: /app/project/ibi-staff/CT-JEPA/public/outputs/error_bars_fair_subset
+  selected_configs: selected_configs
+  per_run: per_run
+  probes: probes
+  aggregate: aggregate

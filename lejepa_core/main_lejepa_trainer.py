@@ -1,5 +1,7 @@
 import gc
-import torch   
+import os
+import time
+import torch
 from data.collate import lejepa_collate_fn
 from data.guided_data_augmentation_CT_RATE import BatchedGuidedDataAugmentationDINO_CT
 from lejepa_core.lejepa_ssl_arch import SSLMetaArch
@@ -116,16 +118,22 @@ class Trainer:
                     backbone_model=unwrapped_lejepa.backbone
                 )
                      
-    def train(self): 
-        max_iter = self.config.train.max_iterations 
+    def train(self):
+        max_iter = self.config.train.max_iterations
+        self.max_train_seconds = getattr(self.config.train, 'max_train_seconds', None)
 
         # Setup checkpointers
         self.start_iteration, self.checkpoint_manager = get_periodic_train_checkpointer(
-            config=self.config, 
-            model=self.ssl_model, 
+            config=self.config,
+            model=self.ssl_model,
             optimizer=self.ssl_model.optimizer,
             accelerator=self.accelerator
         )
+
+        # Tell resumable dataloaders (e.g. multisource_zarr) to skip to the resume
+        # position so the batch stream matches a continuous run.
+        if hasattr(self.dataset, 'set_resume'):
+            self.dataset.set_resume(self.start_iteration)
         
         if self.dist_type == DistributedType.MULTI_GPU:
             self.backbone_checkpoint_manager = get_periodic_backbone_checkpointer_ddp(
@@ -157,9 +165,10 @@ class Trainer:
             train_data = self.train_loader
         else:
             train_data = self.accelerator.prepare(self.train_loader)
-        iteration = self.start_iteration  
+        iteration = self.start_iteration
         do_initialize = iteration > 0
-        
+        self.train_start_time = time.time()
+
         # Training loop
         for data in train_data:
             masks = None
@@ -202,6 +211,13 @@ class Trainer:
 
             if iteration >= max_iter or self.ssl_model.early_stop_triggered:
                 break
+            if self.max_train_seconds is not None and (time.time() - self.train_start_time) > self.max_train_seconds:
+                if self.accelerator.is_main_process:
+                    write_to_main_log(
+                        accelerator=self.accelerator,
+                        result=f"⏱ Max train time reached ({self.max_train_seconds}s) at iter {iteration}; breaking."
+                    )
+                break
             log_str, probe_features = self.ssl_model(iteration, crops, initialize=do_initialize)
             
             if do_initialize: 
@@ -231,8 +247,19 @@ class Trainer:
                     
             self.accelerator.wait_for_everyone()
         
-        # Final checkpoint 
+        # Final checkpoint
         self.save_checkpoint(iteration=iteration, sample_imgs=crops['global_crops'].flatten(0, 1) )
+
+        # Chained-job DONE sentinel: write DONE only on natural completion
+        # (iteration >= max_iter). Time-limit (max_train_seconds) breaks do NOT
+        # write it, so the next chained job resumes from the latest checkpoint.
+        # Tail jobs in the afterany chain exit 0 immediately if DONE exists.
+        if self.accelerator.is_main_process and iteration >= max_iter:
+            run_dir = os.path.join(self.config.output_folders.main_output,
+                                   self.config.train.model_name)
+            open(os.path.join(run_dir, "DONE"), 'w').close()
+            write_to_main_log(accelerator=self.accelerator,
+                              result=f"Reached max_iter={max_iter}; wrote DONE sentinel to {run_dir}")
 
         # Plot training health if using WeightWatcher
         if self.accelerator.is_main_process and getattr(self.ssl_model.scheduler, 'use_ww', False):

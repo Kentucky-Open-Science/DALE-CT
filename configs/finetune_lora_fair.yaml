@@ -1,0 +1,148 @@
+# =============================================================================
+# Stage 2 — LoRA Fine-Tuning on the 4,942 FAIR-TRAIN CT-RATE subset
+# =============================================================================
+# The "fair claim": DALE-CT-2S backbone, LoRA-finetuned on the 4,642 fair-train
+# volumes (300 held out as ckpt-val), single-seed, evaluated on the 992 fair-valid
+# test. Removes the 8x-train-data confound vs Stage 0 (which trained on the full
+# ~47k tar shards).
+#
+# Data path (opt-in, train_dataset_format: npy -- ablation tar configs unaffected):
+#   train: whole-volume .npy from CT-RATE_train_hu, filtered to
+#          fair_train_split_train.txt (4,642 vols; 245 test-overlap patients
+#          RETAINED per Protocol A, matching the baseline eval protocol).
+#   val:   whole-volume .npy from CT-RATE_train_hu, filtered to
+#          fair_train_split_val.txt (300 vols; 0 test-overlap -- ckpt-selection
+#          is patient-disjoint from the 992 test, killing the prior-session
+#          200-pt -> 992 leak). Labels from train_predicted_labels.csv.
+#   test:  992 fair-valid .npy from CT-RATE_valid_hu (separate eval script).
+#
+# Overfit countermeasures (4,642 vols is ~10x less than Stage 0): acc=8 (eff.
+# batch 64 on 8 GPU), 3 epochs, drop_path 0.1, wd 0.05, cosine to min_lr_ratio,
+# early-stop on the test-disjoint val AUPRC. LoRA r=8/alpha=16 (few params ->
+# low overfit risk). steps_per_epoch calibrated for 8 GPU x acc=8 (~73 opt
+# steps/epoch -> ~219 total).
+#
+# Usage: python train_e2e_lora.py --config configs/finetune_lora_fair.yaml
+# =============================================================================
+
+data:
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+
+experiment:
+  seed: 42
+  epochs: 3
+  accumulation_steps: 8               # effective batch = acc x per_device(1) x n_gpu(8) = 64
+  steps_per_epoch: 73                 # 4642 vols / 8 GPU / 8 acc ~= 73 opt steps/epoch (LR schedule only)
+  input_dim: 1024                     # ViT-Large embedding dim
+  num_classes: 18
+
+  best_pooling_scheme: "learned_attention"
+  save_dir: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_fair_stage2/
+
+  finetune_method: "lora"
+  backbone_lr: 3.0e-5                 # unused for lora (lora_lr governs); kept for parity
+
+  # --- Optimizer ---
+  lora_lr: 5.0e-4
+  head_lr: 1.0e-4
+  weight_decay: 0.05                  # raised from 0.01 (small-data regularization)
+
+  # --- LR schedule ---
+  warmup_steps: 20
+  min_lr_ratio: 0.01
+
+  # --- Gradient checkpointing ---
+  chunk_size: 32                      # slices per forward chunk (val); train uses hardcoded 32
+  use_gradient_checkpointing: false   # OFF = one unchunked forward (~33% faster, ~8x VRAM).
+                                      # ON-smoke measured 8.24 GB; OFF-smoke gates this (off-peak
+                                      # bounded <=8x = ~66 GB, safe on 80GB H100). PERF KNOB not an
+                                      # ablation axis; single-seed run so ON/OFF grad divergence is
+                                      # irrelevant (no cross-setting comparison within Stage 2).
+
+  # --- LoRA ---
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+
+  # --- Validation ---
+  val_every_n_steps: 50
+  val_max_batches: 300                # eval all 300 ckpt-val volumes
+  early_stopping_patience: 10
+
+  # --- New architecture (same as ablation) ---
+  use_patch_pooling: true
+  use_slice_transformer: true
+  slice_transformer:
+    num_layers: 2
+    num_heads: 8
+    max_slices: 512
+    dropout: 0.0
+
+  pos_weights: [7.1040, 2.5246, 7.8826, 12.8186, 2.9209, 5.9840, 2.8580, 4.1687, 2.8448, 1.2051, 1.7066, 2.7453, 7.2645, 11.9601, 8.4810, 4.6676, 8.9639, 11.5899]
+
+wandb:
+  project: "DALE-CT-e2e-fair-stage2"
+  run_name: "lora_fair_stage2"
+  group: "e2e_fair_stage2"
+  mode: "offline"
+
+# --- Backbone (DALE-CT-2S, same as Stage 0 ablation for comparability) ---
+train:
+  model_type: "Guided-Chest-CT-LeJEPA-V2"
+  model_name: "lora_fair_stage2"
+  vit_ckpt_path: /app/project/ibi-staff/CT-JEPA/outputs/Guided_Chest_CT_LeJEPA_V2/model_checkpoints/iter_50000/
+  use_pretrained: false
+  drop_path_rate: 0.1                 # raised from 0.0 (small-data regularization)
+
+# --- Data Processing (z_score matches 2S pretrain) ---
+dataset:
+  normalization_mode: "z_score"
+  clip_min: -997.0
+  clip_max: 888.0
+  mean_hu: -142.39
+  std_hu: 360.97
+  num_channels: 1
+  max_slices: 256
+
+# --- DataLoader ---
+validation:
+  # TRAIN: opt-in whole-volume .npy from the fair-train build.
+  train_dataset_format: "npy"         # opt-in (default 'webdataset' = tar, ablation path)
+  train_data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_hu/
+  train_allowed_volumes_path: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/fair_train_split_train.txt
+  num_workers: 8
+
+  # VAL (ckpt selection): 300 fair-train volumes, patient-disjoint from the 992 test.
+  val_dataset_format: "npy"
+  val_data_dir: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_hu/
+  val_label_csv: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_allowed_volumes_path: /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/fair_train_split_val.txt
+  val_max_patients: 300               # informational only (allowed_volume_names overrides sampling)
+
+# --- Inference Mode ---
+inference:
+  mode: "cropped_global"
+  extract_patches: false
+
+crops:
+  global_crops_size: 256
+
+# --- Required placeholders (config-loader parity) ---
+distribution:
+  type: "ddp"
+projector:
+  proj_dim: 128
+  proj_hidden_dim: 2048
+
+output_folders:
+  main_output: /app/project/ibi-staff/CT-JEPA/public/outputs/e2e_fair_stage2
+  log_dir: logs
+  e2e_save_dir: checkpoints
+
+dino_head:
+  out_dim: 65536
+  norm_last_layer: true
+  hidden_dim: 2048
+  bottleneck_dim: 256
+  nlayers: 3

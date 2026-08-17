@@ -1,0 +1,134 @@
+# =============================================================================
+# Benchmark CT Foundation Model Embedding Generation -- FAIR 5k-subset
+# =============================================================================
+# Clone of benchmark_embeddings.yaml with ONE change: output_root ->
+# features/benchmark_fair_subset (isolated from the full-dir benchmark/ outputs).
+#
+# The 5k-subset is enforced by passing --manifest <file> to
+# generate_benchmark_embeddings.py (NOT by this config). The manifest holds Z1's
+# exact bare base-names (4,942 train / 992 valid), built by
+# scripts/build_fair_subset.sh into features/ctrate_fair_subset/manifest_*.txt.
+# So the benchmark subset == DALE-CT-fair subset == Z1 subset (same base-names).
+#   - ctrate_train : --manifest manifest_train.txt (webdataset, allowed_volume_names)
+#   - ctrate_valid : --manifest manifest_valid.txt (npy, post-filter ds.files)
+#   - rad          : NO manifest (RAD uses its own trn/val/tst split, full)
+#
+# Output: features/benchmark_fair_subset/<model>/<split>/<base_name>.npz
+#   (key "embeddings", (seq, embed_dim) float32) -- consumed by
+#   configs/error_bars_fair_subset.yaml's 6 benchmark entries.
+#
+# Usage (smoke, 1 GPU):
+#   python scripts/generate_benchmark_embeddings.py \
+#       --config configs/benchmark_embeddings_fair_subset.yaml \
+#       --model_key rad_dino --split ctrate_valid --limit 2 \
+#       --manifest /app/project/ibi-staff/CT-JEPA/features/ctrate_fair_subset/manifest_valid.txt
+# =============================================================================
+
+mixed_precision: "bf16"
+
+output_root: /app/project/ibi-staff/CT-JEPA/features/benchmark_fair_subset
+
+# --- Per-model overrides (merged onto BENCHMARK_SPECS by the loader) ---
+models:
+  rad_dino:
+    family: 2d_hf
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/rad-dino  # HF dir (model.safetensors)
+    embed_dim: 768
+    hu_window: [-1500.0, 600.0]                      # lung window -> [0,255] uint8
+    processor_use_fast: false
+
+  dinov3:
+    family: 2d_hf
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/dinov3-vitl16-pretrain-lvd1689m
+    embed_dim: 1024
+    hu_window: [-1500.0, 600.0]
+    processor_use_fast: true
+
+  colipri:
+    family: 3d_colipri
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/colipri/model.safetensors
+    embed_dim: 864                                   # raw backbone (projector->768 unused)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+
+  # Our trained LeVLJEPA-CT (Primus-M arch == COLIPRI). One .ckpt, two extract
+  # variants dispatched by `pool`: raw backbone tokens (864-d, matches COLIPRI)
+  # and trained pooled image_raw (768-d). weights -> in-container ckpt path
+  # (host /project/... mounted at /app/project in the DALE-CT eval container).
+  levljepa_ct_raw:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/multimodal-ct/checkpoints/24987_last.ckpt
+    embed_dim: 864                                   # raw backbone (project=False, pool=False)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: false
+  levljepa_ct_pooled:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/multimodal-ct/checkpoints/24987_last.ckpt
+    embed_dim: 768                                   # trained pooled image_raw (project=True, pool=True)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: true
+  # 25117 = LeVLJEPA-CT WSD lr_backbone=1e-5 (the 'cosine' run that was actually WSD —
+  # :lazy6 image, lr_schedule=cosine was a no-op). Same arch/extract as 24987, swapped
+  # ckpt + own output dirs (no 24987 overwrite).
+  levljepa_ct_raw_lr1e5:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/multimodal-ct/checkpoints/25117_last.ckpt
+    embed_dim: 864                                   # raw backbone (project=False, pool=False)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: false
+  levljepa_ct_pooled_lr1e5:
+    family: 3d_levljepa_ct
+    weights: /app/project/ibi-staff/CT-JEPA/multimodal-ct/checkpoints/25117_last.ckpt
+    embed_dim: 768                                   # trained pooled image_raw (project=True, pool=True)
+    input_size: 192
+    hu_clip: [-1000.0, 1000.0]
+    pool: true
+
+  ct_clip:
+    family: 3d_ctclip
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/CT-CHAT/CT-RATE-huggingface-downloads/CT-CLIP_v2.pt
+    embed_dim: 512
+    input_shape: [240, 480, 480]                     # (D, H, W); patch 10x20x20 -> 24^3
+    hu_clip: [-1000.0, 1000.0]
+    pad_value: -1.0
+
+  merlin:
+    family: 3d_merlin
+    # Loaded manually from this .pt by _load_merlin (no auto-download; offline).
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/Merlin/i3_resnet_clinical_longformer_best_clip_04-02-2024_23-21-36_epoch_99.pt
+    embed_dim: 2048                                  # pooled i3_resnet (CT-FM paper Merlin LP)
+    input_shape: [224, 224, 160]                     # (D,H,W) post-permute; 160 = slice/z = i3_resnet temporal dim
+    hu_clip: [-1000.0, 1000.0]
+
+  ct_fm:
+    family: 3d_ctfm
+    weights: /app/project/ibi-staff/CT-JEPA/public/benchmark_models/CT-FM/huggingface/pretrained_segresnet.torch
+    embed_dim: 512
+    patch_size: [24, 128, 128]
+    overlap: 0.625
+    batch_size: 32
+    hu_clip: [-1024.0, 2048.0]
+    max_tokens: 4096                                 # optional safety cap (variable patch count)
+
+# --- Splits (data source per split; output goes under output_root/<model>/<split>) ---
+splits:
+  ctrate_train:
+    dataset_format: webdataset
+    validation:
+      tar_pattern: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_train_tar_ts_rex_final_2/*.tar"
+      num_workers: 4
+
+  ctrate_valid:
+    dataset_format: npy
+    validation:
+      data_dir: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/CT-RATE_valid_hu/"
+      num_workers: 8
+
+  rad:
+    dataset_format: npy
+    validation:
+      data_dir: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/RAD-ChestCT/"
+      num_workers: 8

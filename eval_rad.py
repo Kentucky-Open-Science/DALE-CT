@@ -6,16 +6,51 @@ import yaml
 import argparse
 import os
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix
-
 # Import your dataloaders and model architecture
 from dataloaders.dataloader_rad_embeddings import create_datasets, collate_mil_bags
 from models.colipri_pooling import ColipriProber
+from train_gridsearch import compute_metrics
 
 
 def load_config(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+
+def map_ctrate_to_rad(y_prob_18, fixed_thresholds, ct_rate_classes, rad_classes):
+    """
+    Map 18 CT-RATE-huggingface-downloads probe outputs down to the 16 RAD-ChestCT evaluation classes.
+
+    Calcification = max probability (and OR'd binary prediction) of the two
+    CT-RATE-huggingface-downloads calcification labels (Arterial wall calcification, Coronary artery
+    wall calcification); all other classes map 1:1. Factored from
+    evaluate_transfer so the error-bars bootstrap can reuse the exact mapping.
+    Returns (y_prob_16, y_pred_16).
+    """
+    n = y_prob_18.shape[0]
+    y_prob = np.zeros((n, len(rad_classes)), dtype=float)
+    y_pred = np.zeros((n, len(rad_classes)), dtype=int)
+
+    for i, rad_cls in enumerate(rad_classes):
+        if rad_cls == "Calcification":
+            # Paper methodology: use the higher probability between the two calcification labels
+            idx_art = ct_rate_classes.index("Arterial wall calcification")
+            idx_cor = ct_rate_classes.index("Coronary artery wall calcification")
+
+            # Continuous probability for AUC/AUPRC is the max of the two
+            y_prob[:, i] = np.maximum(y_prob_18[:, idx_art], y_prob_18[:, idx_cor])
+
+            # Binary prediction for F1/BA: positive if EITHER threshold is met
+            art_pred = y_prob_18[:, idx_art] >= fixed_thresholds[idx_art]
+            cor_pred = y_prob_18[:, idx_cor] >= fixed_thresholds[idx_cor]
+            y_pred[:, i] = (art_pred | cor_pred).astype(int)
+        else:
+            # 1-to-1 direct mapping for the remaining classes
+            idx = ct_rate_classes.index(rad_cls)
+            y_prob[:, i] = y_prob_18[:, idx]
+            y_pred[:, i] = (y_prob_18[:, idx] >= fixed_thresholds[idx]).astype(int)
+
+    return y_prob, y_pred
 
 
 def evaluate_transfer(model, loader, device, ct_rate_classes, rad_classes, fixed_thresholds):
@@ -25,7 +60,7 @@ def evaluate_transfer(model, loader, device, ct_rate_classes, rad_classes, fixed
     with torch.no_grad():
         for features, labels, _, mask in tqdm(loader, desc="Evaluating on RAD-ChestCT", leave=False):
             features, mask = features.to(device), mask.to(device)
-            # labels shape: (batch_size, 14) or (batch_size, 16)
+            # labels shape: (batch_size, 16)
 
             logits, _ = model(features, mask=mask)
             probs = torch.sigmoid(logits)  # shape: (batch_size, 18)
@@ -34,82 +69,17 @@ def evaluate_transfer(model, loader, device, ct_rate_classes, rad_classes, fixed
             all_targets.append(labels.numpy())
 
     y_prob_18 = np.vstack(all_probs)
-    y_true_14 = np.vstack(all_targets)
+    y_true = np.vstack(all_targets)
 
-    # Initialize arrays to hold the mapped 14/16-class predictions
-    y_prob_14 = np.zeros_like(y_true_14, dtype=float)
-    y_pred_14 = np.zeros_like(y_true_14, dtype=int)
-
-    # Map the 18 CT-RATE outputs down to the RAD-ChestCT evaluation classes
-    for i, rad_cls in enumerate(rad_classes):
-        if rad_cls == "Calcification":
-            # Paper methodology: Use the higher probability between the two calcification labels
-            idx_art = ct_rate_classes.index("Arterial wall calcification")
-            idx_cor = ct_rate_classes.index("Coronary artery wall calcification")
-
-            # Continuous probability for AUC/AUPRC is the max of the two
-            y_prob_14[:, i] = np.maximum(y_prob_18[:, idx_art], y_prob_18[:, idx_cor])
-
-            # Binary prediction for F1/BA: Positive if EITHER threshold is met
-            art_pred = y_prob_18[:, idx_art] >= fixed_thresholds[idx_art]
-            cor_pred = y_prob_18[:, idx_cor] >= fixed_thresholds[idx_cor]
-            y_pred_14[:, i] = (art_pred | cor_pred).astype(int)
-
-        else:
-            # 1-to-1 direct mapping for the remaining classes
-            idx = ct_rate_classes.index(rad_cls)
-            y_prob_14[:, i] = y_prob_18[:, idx]
-            y_pred_14[:, i] = (y_prob_18[:, idx] >= fixed_thresholds[idx]).astype(int)
-
-    # Calculate metrics
-    try:
-        macro_auc = roc_auc_score(y_true_14, y_prob_14, average="macro")
-        macro_auprc = average_precision_score(y_true_14, y_prob_14, average="macro")
-    except ValueError:
-        macro_auc, macro_auprc = 0.0, 0.0
-
-    macro_scores = {"f1": [], "ba": []}
-    per_class_metrics = {}
-
-    for i, name in enumerate(rad_classes):
-        y_t = y_true_14[:, i]
-        y_p_prob = y_prob_14[:, i]
-        y_p_bin = y_pred_14[:, i]
-
-        prevalence = y_t.mean()
-
-        if len(np.unique(y_t)) < 2:
-            per_class_metrics[name] = {"auroc": 0.0, "auprc": 0.0, "f1": 0.0, "ba": 0.0, "prevalence": prevalence}
-            continue
-
-        auc = roc_auc_score(y_t, y_p_prob)
-        auprc = average_precision_score(y_t, y_p_prob)
-        tn, fp, fn, tp = confusion_matrix(y_t, y_p_bin, labels=[0, 1]).ravel()
-
-        sens = tp / (tp + fn + 1e-6)
-        spec = tn / (tn + fp + 1e-6)
-        ppv = tp / (tp + fp + 1e-6)
-
-        f1 = 2 * (ppv * sens) / (ppv + sens + 1e-6)
-        ba = (sens + spec) / 2.0
-
-        macro_scores["f1"].append(f1)
-        macro_scores["ba"].append(ba)
-
-        per_class_metrics[name] = {
-            "auroc": auc,
-            "auprc": auprc,
-            "f1": f1,
-            "ba": ba,
-            "prevalence": prevalence
-        }
+    y_prob, y_pred = map_ctrate_to_rad(y_prob_18, fixed_thresholds, ct_rate_classes, rad_classes)
+    m = compute_metrics(y_true, y_prob, y_pred, rad_classes)
 
     return {
-        "val_macro_auc": macro_auc,
-        "val_macro_auprc": macro_auprc,
-        "val_macro_f1": np.mean(macro_scores["f1"]) if macro_scores["f1"] else 0.0,
-        "val_macro_ba": np.mean(macro_scores["ba"]) if macro_scores["ba"] else 0.0,
-        "per_class": per_class_metrics
+        "val_macro_auc": m["macro_auc"],
+        "val_macro_auprc": m["macro_auprc"],
+        "val_macro_f1": m["macro_f1"],
+        "val_macro_ba": m["macro_ba"],
+        "per_class": m["per_class"],
     }
 
 

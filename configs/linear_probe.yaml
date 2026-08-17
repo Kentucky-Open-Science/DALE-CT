@@ -10,8 +10,8 @@
 
 data:
   # CSV files mapping volume IDs to 18 binary abnormality labels
-  train_label_path: /path/to/CT-RATE/train_predicted_labels.csv
-  val_label_path: /path/to/CT-RATE/valid_predicted_labels.csv
+  train_label_path: /path/to/CT-RATE-huggingface-downloads/train_predicted_labels.csv
+  val_label_path: /path/to/CT-RATE-huggingface-downloads/valid_predicted_labels.csv
 
   # Directories containing pre-computed slice embeddings (.npy files)
   train_embedding_dir: /path/to/features/ctrate/train/
@@ -19,11 +19,11 @@ data:
 
 experiment:
   seed: 42
-  total_steps: 20000                   # Training steps (paper uses 12,500; 20,000 for safety)
+  total_steps: 15000                   # Training steps (paper uses 12,500; 20,000 for safety)
   eval_freq: 2500                      # Evaluate and save checkpoints every N steps
   batch_size: 16                       # Batch size (matches paper)
   input_dim: 1024                      # Encoder embedding dimension
-  num_classes: 18                      # Number of CT-RATE abnormality classes
+  num_classes: 18                      # Number of CT-RATE-huggingface-downloads abnormality classes
   save_dir: /path/to/outputs/linear_probe/
 
   pooling_mode: "embedding"            # "embedding" = run all pooling schemes
@@ -33,8 +33,8 @@ experiment:
     - "average"                        # Simple average pooling across sequence
     - "max"                            # Simple max pooling across sequence
     - "learned_attention"              # Single learned query token attention
-    - "average_attention"              # Attention with average-pooled query
-    - "multilearned_attention"         # 4 learned queries, averaged output
+#    - "average_attention"              # Attention with average-pooled query
+#    - "multilearned_attention"         # 4 learned queries, averaged output
 
   # Grid search over 4 learning rates (paper: {10⁻¹, 3·10⁻², 1·10⁻², 3·10⁻³})
   learning_rates:
@@ -44,6 +44,6 @@ experiment:
     - 0.003
 
 wandb:
-  project: "CT-RATE-LinearProbe"
+  project: "CT-RATE-huggingface-downloads-LinearProbe"
   group: "colipri_replication"
   mode: "offline"

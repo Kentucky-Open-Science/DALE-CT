@@ -9,8 +9,8 @@
 
 data:
   # CSV files mapping volume IDs to 18 binary abnormality labels
-  train_label_path: /path/to/CT-RATE/train_predicted_labels.csv
-  val_label_path: /path/to/CT-RATE/valid_predicted_labels.csv
+  train_label_path: /path/to/CT-RATE-huggingface-downloads/train_predicted_labels.csv
+  val_label_path: /path/to/CT-RATE-huggingface-downloads/valid_predicted_labels.csv
 
 experiment:
   seed: 42
@@ -18,7 +18,7 @@ experiment:
   accumulation_steps: 32              # Gradient accumulation steps (effective batch = acc_steps × per_device)
   steps_per_epoch: 375                # Estimated volumes per epoch (WebDataset has no __len__)
   input_dim: 1024                     # Encoder embedding dimension
-  num_classes: 18                     # Number of CT-RATE abnormality classes
+  num_classes: 18                     # Number of CT-RATE-huggingface-downloads abnormality classes
   best_pooling_scheme: "learned_attention"  # Pooling scheme (from best linear probe result)
   save_dir: /path/to/outputs/lora_finetune/
 
@@ -45,11 +45,11 @@ experiment:
   early_stopping_patience: 10         # Stop after N checks without AUPRC improvement
 
   # Positive class weights for BCE loss (computed from training set prevalence)
-  # These counteract severe class imbalance in CT-RATE abnormalities
+  # These counteract severe class imbalance in CT-RATE-huggingface-downloads abnormalities
   pos_weights: [7.1040, 2.5246, 7.8826, 12.8186, 2.9209, 5.9840, 2.8580, 4.1687, 2.8448, 1.2051, 1.7066, 2.7453, 7.2645, 11.9601, 8.4810, 4.6676, 8.9639, 11.5899]
 
 wandb:
-  project: "CT-RATE-LoRA"
+  project: "CT-RATE-huggingface-downloads-LoRA"
   run_name: "lora_finetune"
   group: "e2e_finetune"
   mode: "offline"
@@ -70,13 +70,13 @@ dataset:
 # --- DataLoader ---
 validation:
   dataset_format: "webdataset"             # Training data format
-  train_tar_pattern: /path/to/CT-RATE/training/tarfiles/*.tar  # WebDataset tar shards
+  train_tar_pattern: /path/to/CT-RATE-huggingface-downloads/training/tarfiles/*.tar  # WebDataset tar shards
   num_workers: 4
 
-  # Validation: .npy files from pre-processed CT-RATE validation set
+  # Validation: .npy files from pre-processed CT-RATE-huggingface-downloads validation set
   val_dataset_format: "npy"
-  val_data_dir: /path/to/CT-RATE/valid_hu_resized/
-  val_label_csv: /path/to/CT-RATE/valid_predicted_labels.csv
+  val_data_dir: /path/to/CT-RATE-huggingface-downloads/valid_hu_resized/
+  val_label_csv: /path/to/CT-RATE-huggingface-downloads/valid_predicted_labels.csv
   val_max_patients: 200                    # Limit validation to N patients for speed
 
 # --- Inference Mode ---

@@ -6,17 +6,19 @@ import numpy as np
 import os
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 
 class CTScanMILDataset(Dataset):
     def __init__(self, df, embedding_dir, label_cols, id_col='VolumeName', file_ext='.nii.gz', preload_ram=True,
-                 only_global=False):
+                 only_global=False, num_cache_workers=8):
         self.embedding_dir = embedding_dir
         self.preload_ram = preload_ram
         self.only_global = only_global
         self.label_cols = label_cols
         self.id_col = id_col
         self.file_ext = file_ext
+        self.num_cache_workers = num_cache_workers
 
         valid_indices = []
         self.data_cache = []
@@ -25,7 +27,12 @@ class CTScanMILDataset(Dataset):
 
         print(f"Loading and verifying files from {embedding_dir}...")
 
-        for idx, row in tqdm(df.iterrows(), total=len(df), desc="Caching Dataset"):
+        # First pass: resolve paths and filter to existing files (cheap os.path.exists
+        # only). The heavy np.load + zlib decompress is deferred to a thread pool
+        # below — numpy releases the GIL during file I/O and decompression, so this
+        # turns the single-threaded 19 it/s cache into a parallel load.
+        candidates = []  # (orig_idx, row, load_path, is_npz, base_name)
+        for idx, row in df.iterrows():
             fname = str(row[self.id_col])
 
             # Handle filename parsing based on the dataset structure
@@ -34,31 +41,62 @@ class CTScanMILDataset(Dataset):
             else:
                 base_name = fname
 
+            # Support both .npy (single array) and .npz (multi-array, key='embeddings')
             npy_path = os.path.join(self.embedding_dir, base_name + ".npy")
+            npz_path = os.path.join(self.embedding_dir, base_name + ".npz")
 
             if os.path.exists(npy_path):
-                try:
-                    load_mode = 'r' if self.only_global else None
-                    data = np.load(npy_path, mmap_mode=load_mode)
+                candidates.append((idx, row, npy_path, False, base_name))
+            elif os.path.exists(npz_path):
+                candidates.append((idx, row, npz_path, True, base_name))
 
-                    if self.only_global and data.ndim == 3:
-                        data = data[:, 0, :]
+        # Second pass: load + decompress in parallel. Each job returns the raw array
+        # (sliced for only_global) or None on failure; caching/labeling happens in
+        # the main thread below, preserving the original valid_indices ordering.
+        def _load(item):
+            idx, row, load_path, is_npz, base_name = item
+            try:
+                load_mode = 'r' if self.only_global else None
+                if is_npz:
+                    archive = np.load(load_path, allow_pickle=True)
+                    # Multi-method .npz files store embeddings under the 'embeddings' key
+                    if 'embeddings' in archive:
+                        data = archive['embeddings']
+                    else:
+                        # Fallback: use the first array in the archive
+                        data = archive[list(archive.keys())[0]]
+                else:
+                    data = np.load(load_path, mmap_mode=load_mode)
 
-                    valid_indices.append(idx)
+                if self.only_global and data.ndim == 3:
+                    data = data[:, 0, :]
+                return (idx, row, data, base_name)
+            except Exception as e:
+                print(f"Warning: could not read {load_path}: {e}")
+                return None
 
-                    if self.preload_ram:
-                        bag_features = data.reshape(-1, data.shape[-1]).copy()
-                        features = torch.from_numpy(bag_features).float()
+        if self.num_cache_workers and self.num_cache_workers > 1 and len(candidates) > 1:
+            with ThreadPoolExecutor(max_workers=self.num_cache_workers) as ex:
+                results = list(tqdm(ex.map(_load, candidates), total=len(candidates), desc="Caching Dataset"))
+        else:
+            results = [_load(c) for c in tqdm(candidates, desc="Caching Dataset")]
 
-                        labels_np = row[self.label_cols].values.astype(np.float32)
-                        label_tensor = torch.tensor(labels_np, dtype=torch.float32)
+        for r in results:
+            if r is None:
+                continue
+            idx, row, data, base_name = r
+            valid_indices.append(idx)
 
-                        self.data_cache.append(features)
-                        self.labels_cache.append(label_tensor)
-                        self.names_cache.append(base_name)
+            if self.preload_ram:
+                bag_features = data.reshape(-1, data.shape[-1]).copy()
+                features = torch.from_numpy(bag_features).float()
 
-                except Exception as e:
-                    print(f"Warning: could not read {npy_path}: {e}")
+                labels_np = row[self.label_cols].values.astype(np.float32)
+                label_tensor = torch.tensor(labels_np, dtype=torch.float32)
+
+                self.data_cache.append(features)
+                self.labels_cache.append(label_tensor)
+                self.names_cache.append(base_name)
 
         print(f"Matched {len(valid_indices)} / {len(df)} volumes.")
         self.df = df.loc[valid_indices].reset_index(drop=True)
@@ -73,11 +111,23 @@ class CTScanMILDataset(Dataset):
             row = self.df.iloc[idx]
             fname = str(row[self.id_col])
             base_name = os.path.splitext(fname.replace(self.file_ext, ''))[0] if self.file_ext else fname
+
+            # Support both .npy (single array) and .npz (multi-array, key='embeddings')
             npy_path = os.path.join(self.embedding_dir, base_name + ".npy")
+            npz_path = os.path.join(self.embedding_dir, base_name + ".npz")
 
             try:
-                load_mode = 'r' if self.only_global else None
-                data = np.load(npy_path, mmap_mode=load_mode)
+                if os.path.exists(npy_path):
+                    load_mode = 'r' if self.only_global else None
+                    data = np.load(npy_path, mmap_mode=load_mode)
+                elif os.path.exists(npz_path):
+                    archive = np.load(npz_path, allow_pickle=True)
+                    if 'embeddings' in archive:
+                        data = archive['embeddings']
+                    else:
+                        data = archive[list(archive.keys())[0]]
+                else:
+                    raise FileNotFoundError(f"Neither {npy_path} nor {npz_path} found")
 
                 if self.only_global and data.ndim == 3:
                     data = data[:, 0, :]
@@ -104,8 +154,12 @@ def collate_mil_bags(batch):
     batch_size = len(features_list)
     input_dim = features_list[0].shape[1]
 
-    padded_features = torch.zeros((batch_size, max_len, input_dim), dtype=torch.float)
-    mask = torch.zeros((batch_size, max_len), dtype=torch.bool)
+    # Build padded tensors on the same device as the input bags. When bags are
+    # GPU-resident (cache_bags_on_gpu), this avoids re-creating a CPU padded
+    # tensor every batch + a host->GPU copy. CPU inputs are unaffected.
+    _dev = features_list[0].device
+    padded_features = torch.zeros((batch_size, max_len, input_dim), dtype=torch.float, device=_dev)
+    mask = torch.zeros((batch_size, max_len), dtype=torch.bool, device=_dev)
 
     for i, feat in enumerate(features_list):
         end = lengths[i]
@@ -120,6 +174,7 @@ def _create_ctrate_datasets(config):
     only_global = data_cfg.get('only_global', False)
     seed = config['experiment'].get('seed', 42)
     label_cols = config['experiment']['ct_rate_classes']
+    num_cache_workers = config['experiment'].get('num_cache_workers', 8)
 
     full_train_df = pd.read_csv(data_cfg['train_label_path'])
     full_train_df['PatientID'] = full_train_df['VolumeName'].apply(
@@ -135,9 +190,12 @@ def _create_ctrate_datasets(config):
 
     test_df = pd.read_csv(data_cfg['val_label_path'])
 
-    train_dataset = CTScanMILDataset(train_df, data_cfg['train_embedding_dir'], label_cols, only_global=only_global)
-    val_dataset = CTScanMILDataset(val_df, data_cfg['train_embedding_dir'], label_cols, only_global=only_global)
-    test_dataset = CTScanMILDataset(test_df, data_cfg['val_embedding_dir'], label_cols, only_global=only_global)
+    train_dataset = CTScanMILDataset(train_df, data_cfg['train_embedding_dir'], label_cols, only_global=only_global,
+                                     num_cache_workers=num_cache_workers)
+    val_dataset = CTScanMILDataset(val_df, data_cfg['train_embedding_dir'], label_cols, only_global=only_global,
+                                   num_cache_workers=num_cache_workers)
+    test_dataset = CTScanMILDataset(test_df, data_cfg['val_embedding_dir'], label_cols, only_global=only_global,
+                                    num_cache_workers=num_cache_workers)
 
     return train_dataset, val_dataset, test_dataset
 
@@ -146,6 +204,7 @@ def _create_rad_datasets(config):
     data_cfg = config['data']
     only_global = data_cfg.get('only_global', False)
     label_cols = config['experiment']['rad_chestct_classes']
+    num_cache_workers = config['experiment'].get('num_cache_workers', 8)
 
     csv_path = data_cfg['rad_label_path']
     emb_dir = data_cfg['rad_embedding_dir']
@@ -166,11 +225,11 @@ def _create_rad_datasets(config):
 
     # Note the id_col and file_ext kwargs specific to RAD-ChestCT
     train_dataset = CTScanMILDataset(train_df, emb_dir, label_cols, id_col='NoteAcc_DEID', file_ext='',
-                                     only_global=only_global)
+                                     only_global=only_global, num_cache_workers=num_cache_workers)
     val_dataset = CTScanMILDataset(val_df, emb_dir, label_cols, id_col='NoteAcc_DEID', file_ext='',
-                                   only_global=only_global)
+                                   only_global=only_global, num_cache_workers=num_cache_workers)
     test_dataset = CTScanMILDataset(test_df, emb_dir, label_cols, id_col='NoteAcc_DEID', file_ext='',
-                                    only_global=only_global)
+                                    only_global=only_global, num_cache_workers=num_cache_workers)
 
     return train_dataset, val_dataset, test_dataset
 

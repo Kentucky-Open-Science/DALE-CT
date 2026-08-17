@@ -6,13 +6,14 @@ import numpy as np
 import yaml
 import argparse
 import os
+from contextlib import nullcontext
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix, precision_recall_curve
-import wandb
 
 # Import your dataloaders
 from dataloaders.dataloader_embeddings import create_datasets, collate_mil_bags
 from models.colipri_pooling import ColipriProber
+from models.mil_pooling import build_prober, cyclical_lambda
 
 
 def load_config(path):
@@ -52,39 +53,24 @@ def get_optimal_f1_thresholds(y_true, y_prob):
     return np.array(thresholds_out)
 
 
-def evaluate(model, loader, criterion, device, label_names, fixed_thresholds=None):
-    model.eval()
-    total_loss = 0
-    all_targets, all_probs = [], []
+def compute_metrics(y_true, y_prob, y_pred, label_names):
+    """
+    Macro + per-class metrics from probability and binary predictions.
 
-    with torch.no_grad():
-        for features, labels, _, mask in tqdm(loader, desc="Evaluating", leave=False):
-            features, labels, mask = features.to(device), labels.to(device), mask.to(device)
-            logits, _ = model(features, mask=mask)
-
-            loss = criterion(logits, labels)
-            total_loss += loss.item()
-
-            probs = torch.sigmoid(logits)
-            all_probs.append(probs.cpu().numpy())
-            all_targets.append(labels.cpu().numpy())
-
-    y_prob = np.vstack(all_probs)
-    y_true = np.vstack(all_targets)
-
-    if fixed_thresholds is None:
-        best_thresholds = get_optimal_f1_thresholds(y_true, y_prob)
-    else:
-        best_thresholds = fixed_thresholds
-
-    y_pred = (y_prob >= best_thresholds).astype(int)
-    metrics = {"val_loss": total_loss / len(loader)}
+    This is the metric block factored out of evaluate() / evaluate_transfer()
+    so the error-bars bootstrap can recompute the exact same metrics on
+    resampled predictions (no new metric code). Macro AUC/AUPRC are computed
+    on the full label matrix (all-or-nothing via try/except, as in the
+    original); macro F1/BA average over non-degenerate classes only, using
+    the len(np.unique(y_t)) < 2 exclusion rule.
+    """
+    metrics = {}
 
     try:
-        metrics["val_macro_auc"] = roc_auc_score(y_true, y_prob, average="macro")
-        metrics["val_macro_auprc"] = average_precision_score(y_true, y_prob, average="macro")
+        metrics["macro_auc"] = roc_auc_score(y_true, y_prob, average="macro")
+        metrics["macro_auprc"] = average_precision_score(y_true, y_prob, average="macro")
     except ValueError:
-        metrics["val_macro_auc"], metrics["val_macro_auprc"] = 0.0, 0.0
+        metrics["macro_auc"], metrics["macro_auprc"] = 0.0, 0.0
 
     macro_scores = {"f1": [], "ba": []}
     per_class_metrics = {}
@@ -123,15 +109,176 @@ def evaluate(model, loader, criterion, device, label_names, fixed_thresholds=Non
             "prevalence": prevalence
         }
 
-    metrics["val_macro_f1"] = np.mean(macro_scores["f1"]) if macro_scores["f1"] else 0.0
-    metrics["val_macro_ba"] = np.mean(macro_scores["ba"]) if macro_scores["ba"] else 0.0
-    metrics["thresholds"] = best_thresholds
+    metrics["macro_f1"] = np.mean(macro_scores["f1"]) if macro_scores["f1"] else 0.0
+    metrics["macro_ba"] = np.mean(macro_scores["ba"]) if macro_scores["ba"] else 0.0
     metrics["per_class"] = per_class_metrics
 
     return metrics
 
 
+def set_seed(seed):
+    """Seed all probe-training randomness (init + shuffle). ColipriProber has no dropout."""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
+
+def evaluate(model, loader, criterion, device, label_names, fixed_thresholds=None, disable_tqdm=False):
+    model.eval()
+    total_loss = 0
+    all_targets, all_probs = [], []
+
+    with torch.no_grad():
+        for features, labels, _, mask in tqdm(loader, desc="Evaluating", leave=False, disable=disable_tqdm):
+            features, labels, mask = features.to(device), labels.to(device), mask.to(device)
+            logits, _ = model(features, mask=mask)
+
+            loss = criterion(logits, labels)
+            total_loss += loss.item()
+
+            probs = torch.sigmoid(logits)
+            all_probs.append(probs.cpu().numpy())
+            all_targets.append(labels.cpu().numpy())
+
+    y_prob = np.vstack(all_probs)
+    y_true = np.vstack(all_targets)
+
+    if fixed_thresholds is None:
+        best_thresholds = get_optimal_f1_thresholds(y_true, y_prob)
+    else:
+        best_thresholds = fixed_thresholds
+
+    y_pred = (y_prob >= best_thresholds).astype(int)
+    m = compute_metrics(y_true, y_prob, y_pred, label_names)
+
+    metrics = {
+        "val_loss": total_loss / len(loader),
+        "val_macro_auc": m["macro_auc"],
+        "val_macro_auprc": m["macro_auprc"],
+        "val_macro_f1": m["macro_f1"],
+        "val_macro_ba": m["macro_ba"],
+        "thresholds": best_thresholds,
+        "per_class": m["per_class"],
+    }
+
+    return metrics
+
+
+def train_one_config(train_loader, val_loader, lr, pooling, config, device, seed, label_names,
+                     init_lock=None):
+    """
+    Train a single probe configuration (one pooling scheme, one LR) with the
+    SGD + cosine-annealing protocol from run_experiment, evaluating on
+    validation every eval_freq and keeping the best-val-AUPRC step.
+
+    Factored from run_experiment's inner loop so the error-bars pipeline can
+    train one fixed config under a controlled seed. Returns the best model
+    state (CPU), its validation F1 thresholds (optimized on validation at the
+    best step), and the best val macro AUPRC. Performs no saving and no wandb
+    logging — the caller decides what to persist.
+
+    init_lock: when training several configs concurrently on one GPU
+    (run_select's parallel-LR path), pass a threading.Lock so set_seed +
+    ColipriProber construction (which use the *global* RNG) are serialized —
+    without it, concurrent configs race on the global generator. The training
+    loop itself runs outside the lock. None = sequential (default), unchanged.
+    """
+    total_steps = config['experiment']['total_steps']
+    eval_freq = config['experiment'].get('eval_freq', 2500)
+    quiet = init_lock is not None  # concurrent configs: keep logs clean
+
+    # set_seed + model/optimizer construction touch the global RNG (nn.Linear
+    # init uses the default generator). Serialize under init_lock when running
+    # concurrently so each config sees a clean, un-raced seed.
+    with (init_lock or nullcontext()):
+        if seed is not None:
+            set_seed(seed)
+
+        model = build_prober(
+            input_dim=config['experiment']['input_dim'],
+            num_classes=config['experiment']['num_classes'],
+            pooling_scheme=pooling,
+            pooling_mode=config['experiment'].get('pooling_mode', 'embedding'),
+            config=config,
+        ).to(device)
+
+        optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.95, weight_decay=0)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+        criterion = nn.BCEWithLogitsLoss()
+        mil_cfg = config.get('mil', {}) if isinstance(config, dict) else {}
+        n_cycles = mil_cfg.get('n_cycles', 5)
+        max_lambda = mil_cfg.get('max_lambda', 1.0)
+
+    best_val_auprc = -1.0
+    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    best_thresholds = None
+
+    train_iter = get_infinite_iterator(train_loader)
+    model.train()
+
+    running_train_loss = 0.0
+    train_loss_steps = 0
+
+    for step in tqdm(range(1, total_steps + 1), desc=f"Training {pooling} LR={lr}", disable=quiet):
+        features, labels, _, mask = next(train_iter)
+        features, labels, mask = features.to(device), labels.to(device), mask.to(device)
+
+        optimizer.zero_grad()
+        logits, aux = model(features, mask=mask)
+        loss = criterion(logits, labels)
+        if aux is not None:
+            # ProbSA KL term with cyclical annealing (paper: M=5 cycles, 0->1).
+            kl_w = cyclical_lambda(step, total_steps, n_cycles, max_lambda)
+            loss = loss + kl_w * aux
+        loss.backward()
+        # Grad clip + non-finite skip: the ProbSA KL (cyclical-annealed, up to
+        # weight 1.0) drives the attention logits' gradient hard at high LR ->
+        # overflow -> NaN logits -> crash in precision_recall_curve. probsa_diag
+        # adds a log(sigma^2) term that can hit log(0) -> +inf. Clip at 1.0
+        # (standard for KL/variational training; the ProbSA ref CT-MIL clips too)
+        # and skip the step on a non-finite loss so one bad batch can't poison the
+        # weights. Stable schemes (average/max/abmil) are unaffected: their grad
+        # norms stay well under 1.0, so the clip never engages.
+        if not torch.isfinite(loss):
+            optimizer.zero_grad()
+            continue
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+
+        running_train_loss += loss.item()
+        train_loss_steps += 1
+
+        # Evaluate periodically and keep the best-val-AUPRC step
+        if step % eval_freq == 0 or step == total_steps:
+            val_metrics = evaluate(model, val_loader, criterion, device, label_names, disable_tqdm=quiet)
+            current_auprc = val_metrics["val_macro_auprc"]
+            current_f1 = val_metrics["val_macro_f1"]
+            avg_train_loss = running_train_loss / train_loss_steps
+
+            print(f"\nStep {step}/{total_steps} | Train Loss: {avg_train_loss:.4f} | Val AUPRC: {current_auprc:.4f} | Val F1: {current_f1:.4f}")
+
+            # Reset running loss for the next evaluation window
+            running_train_loss = 0.0
+            train_loss_steps = 0
+
+            if current_auprc > best_val_auprc:
+                best_val_auprc = current_auprc
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                best_thresholds = val_metrics["thresholds"]
+
+            model.train()
+
+    return {
+        "best_val_auprc": best_val_auprc,
+        "best_model_state": best_model_state,
+        "best_thresholds": best_thresholds,
+    }
+
+
 def run_experiment(config, train_dataset, val_dataset, device):
+    import wandb  # optional dependency; only needed for the v628 grid-search path
+
     best_overall_auprc = 0.0
     best_config_str = ""
     best_pool_scheme = ""
@@ -141,8 +288,8 @@ def run_experiment(config, train_dataset, val_dataset, device):
     val_loader = DataLoader(val_dataset, batch_size=config['experiment']['batch_size'], shuffle=False,
                             collate_fn=collate_mil_bags, num_workers=2)
 
-    total_steps = config['experiment']['total_steps']
-    eval_freq = config['experiment'].get('eval_freq', 2500)
+    label_names = val_dataset.label_cols
+    seed = config['experiment'].get('seed', 42)
 
     for pool_scheme in config['experiment']['pooling_schemes']:
         # Create a subdirectory for this specific pooling type
@@ -161,72 +308,24 @@ def run_experiment(config, train_dataset, val_dataset, device):
                 reinit=True, mode=config['wandb']['mode']
             )
 
-            model = ColipriProber(
-                input_dim=config['experiment']['input_dim'],
-                num_classes=config['experiment']['num_classes'],
-                pooling_scheme=pool_scheme,
-                pooling_mode=config['experiment'].get('pooling_mode', 'embedding')
-            ).to(device)
+            result = train_one_config(train_loader, val_loader, lr, pool_scheme, config, device, seed, label_names)
+            best_run_auprc = result["best_val_auprc"]
 
-            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.95, weight_decay=0)
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+            # 1. Save if it's the best for THIS pooling scheme (regardless of LR)
+            if best_run_auprc > best_scheme_auprc:
+                best_scheme_auprc = best_run_auprc
+                torch.save(result["best_model_state"], os.path.join(scheme_dir, "best_model.pth"))
+                np.save(os.path.join(scheme_dir, "best_thresholds.npy"), result["best_thresholds"])
 
-            criterion = nn.BCEWithLogitsLoss()
-            best_run_auprc = 0.0
+            # 2. Keep track of the absolute best for the final summary
+            if best_run_auprc > best_overall_auprc:
+                best_overall_auprc = best_run_auprc
+                best_config_str = f"Pooling: {pool_scheme}, LR: {lr}"
+                best_pool_scheme = pool_scheme
 
-            train_iter = get_infinite_iterator(train_loader)
-            model.train()
-
-            running_train_loss = 0.0
-            train_loss_steps = 0
-
-            for step in tqdm(range(1, total_steps + 1), desc=f"Training {pool_scheme} LR={lr}"):
-                features, labels, _, mask = next(train_iter)
-                features, labels, mask = features.to(device), labels.to(device), mask.to(device)
-
-                optimizer.zero_grad()
-                logits, _ = model(features, mask=mask)
-                loss = criterion(logits, labels)
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-
-                running_train_loss += loss.item()
-                train_loss_steps += 1
-
-                # Evaluate and log periodically
-                if step % eval_freq == 0 or step == total_steps:
-                    val_metrics = evaluate(model, val_loader, criterion, device, val_dataset.label_cols)
-                    current_auprc = val_metrics["val_macro_auprc"]
-                    current_f1 = val_metrics["val_macro_f1"]
-                    avg_train_loss = running_train_loss / train_loss_steps
-
-                    print(f"\nStep {step}/{total_steps} | Train Loss: {avg_train_loss:.4f} | Val AUPRC: {current_auprc:.4f} | Val F1: {current_f1:.4f}")
-
-                    # Reset running loss for the next evaluation window
-                    running_train_loss = 0.0
-                    train_loss_steps = 0
-
-                    if current_auprc > best_run_auprc:
-                        best_run_auprc = current_auprc
-
-                    # 1. Save if it's the best for THIS pooling scheme (regardless of LR)
-                    if current_auprc > best_scheme_auprc:
-                        best_scheme_auprc = current_auprc
-                        torch.save(model.state_dict(), os.path.join(scheme_dir, "best_model.pth"))
-                        np.save(os.path.join(scheme_dir, "best_thresholds.npy"), val_metrics["thresholds"])
-
-                    # 2. Keep track of the absolute best for the final summary
-                    if current_auprc > best_overall_auprc:
-                        best_overall_auprc = current_auprc
-                        best_config_str = f"Pooling: {pool_scheme}, LR: {lr}"
-                        best_pool_scheme = pool_scheme
-
-                        # Keep a copy of the global winner in the root save_dir
-                        torch.save(model.state_dict(),
-                                   os.path.join(config['experiment']['save_dir'], "global_best_model.pth"))
-
-                    model.train()
+                # Keep a copy of the global winner in the root save_dir
+                torch.save(result["best_model_state"],
+                           os.path.join(config['experiment']['save_dir'], "global_best_model.pth"))
 
             wandb.finish()
             print(f"✅ Finished {pool_scheme} (LR={lr}) - Best AUPRC: {best_run_auprc:.4f}")
@@ -262,11 +361,12 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_dataset, batch_size=config['experiment']['batch_size'], shuffle=False,
                              collate_fn=collate_mil_bags, num_workers=2)
 
-    best_model = ColipriProber(
+    best_model = build_prober(
         input_dim=config['experiment']['input_dim'],
         num_classes=config['experiment']['num_classes'],
         pooling_scheme=best_pool_scheme,
-        pooling_mode=config['experiment'].get('pooling_mode', 'embedding')
+        pooling_mode=config['experiment'].get('pooling_mode', 'embedding'),
+        config=config,
     ).to(device)
 
     # Load from the specific subdirectory of the global winner

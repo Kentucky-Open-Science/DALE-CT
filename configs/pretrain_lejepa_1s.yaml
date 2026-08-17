@@ -65,7 +65,7 @@ crops:
 # --- Dataset ---
 dataset:
   gpu_augmentations: true
-  dataset_path: /path/to/CT-RATE/training/tarfiles/
+  dataset_path: /path/to/CT-RATE-huggingface-downloads/training/tarfiles/
   num_workers: 4
   shuffle_buffer: 100
   slab_size: 12.0

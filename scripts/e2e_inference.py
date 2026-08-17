@@ -2,7 +2,7 @@
 End-to-End LoRA + Colipri Inference Script
 ==========================================
 Loads the best model checkpoint from e2e_ft.yaml training and runs inference on:
-  1. CT-RATE full validation set (unique patients)
+  1. CT-RATE-huggingface-downloads full validation set (unique patients)
   2. RAD-ChestCT full dataset
 
 For RAD-ChestCT, follows the protocol:
@@ -11,9 +11,9 @@ For RAD-ChestCT, follows the protocol:
 
 Evaluation:
   - Computes macro and per-class AUROC, AUPRC
-  - Optimizes decision thresholds per class on CT-RATE to maximize F1
+  - Optimizes decision thresholds per class on CT-RATE-huggingface-downloads to maximize F1
   - Reports per-class F1 and Balanced Accuracy at those thresholds
-  - Applies CT-RATE-optimized thresholds as-is to RAD-ChestCT
+  - Applies CT-RATE-huggingface-downloads-optimized thresholds as-is to RAD-ChestCT
 
 Usage:
   python scripts/e2e_inference.py --config configs/finetune_lora.yaml
@@ -51,7 +51,7 @@ from peft import LoraConfig, get_peft_model
 
 
 # ============================================================
-# CT-RATE label order (18 classes, from e2e_ft.yaml pos_weights)
+# CT-RATE-huggingface-downloads label order (18 classes, from e2e_ft.yaml pos_weights)
 # ============================================================
 CTRATE_CLASS_NAMES = [
     "Medical material",
@@ -99,10 +99,10 @@ RAD_CLASS_NAMES = [
 
 def map_ctrate_to_rad(ctrate_probs, ctrate_class_names, rad_class_names):
     """
-    Map CT-RATE model outputs (18 classes) to RAD-ChestCT label space (16 classes).
+    Map CT-RATE-huggingface-downloads model outputs (18 classes) to RAD-ChestCT label space (16 classes).
 
     Protocol:
-      - Exclude "Mosaic attenuation pattern" (index 13 in CT-RATE)
+      - Exclude "Mosaic attenuation pattern" (index 13 in CT-RATE-huggingface-downloads)
       - "Calcification" = max("Arterial wall calcification" (idx 1),
                               "Coronary artery wall calcification" (idx 4))
     """
@@ -126,7 +126,7 @@ def map_ctrate_to_rad(ctrate_probs, ctrate_class_names, rad_class_names):
 
 def map_ctrate_thresholds_to_rad(ctrate_thresholds, ctrate_class_names, rad_class_names):
     """
-    Map CT-RATE-optimized thresholds (18 classes) to RAD-ChestCT space (16 classes).
+    Map CT-RATE-huggingface-downloads-optimized thresholds (18 classes) to RAD-ChestCT space (16 classes).
 
     For "Calcification", we take the max of the two calcification thresholds
     (conservative approach: higher threshold = higher specificity).
@@ -522,7 +522,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/finetune_lora.yaml",
                         help="Path to inference config YAML")
     parser.add_argument("--ctrate-only", action="store_true",
-                        help="Only run inference on CT-RATE validation set")
+                        help="Only run inference on CT-RATE-huggingface-downloads validation set")
     parser.add_argument("--rad-only", action="store_true",
                         help="Only run inference on RAD-ChestCT")
     args = parser.parse_args()
@@ -554,16 +554,16 @@ def main():
     if accelerator.is_main_process:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Will hold CT-RATE thresholds for transfer to RAD-ChestCT
+    # Will hold CT-RATE-huggingface-downloads thresholds for transfer to RAD-ChestCT
     ctrate_thresholds = None
 
     # ============================================================
-    # 3. CT-RATE Validation Inference
+    # 3. CT-RATE-huggingface-downloads Validation Inference
     # ============================================================
     if not args.rad_only:
         if accelerator.is_main_process:
             print("\n" + "=" * 60)
-            print("CT-RATE VALIDATION SET INFERENCE")
+            print("CT-RATE-huggingface-downloads VALIDATION SET INFERENCE")
             print("=" * 60)
 
         ctrate_data_dir = config.ctrate.data_dir
@@ -597,10 +597,10 @@ def main():
         val_loader = accelerator.prepare(val_loader)
 
         if accelerator.is_main_process:
-            print(f"CT-RATE validation dataset: {len(val_dataset)} volumes")
+            print(f"CT-RATE-huggingface-downloads validation dataset: {len(val_dataset)} volumes")
 
         ctrate_probs, ctrate_labels, ctrate_filenames = run_inference_on_dataset(
-            model, val_loader, processor, accelerator, config, dataset_name="CT-RATE Val"
+            model, val_loader, processor, accelerator, config, dataset_name="CT-RATE-huggingface-downloads Val"
         )
 
         # Compute metrics and save only on the main process
@@ -612,7 +612,7 @@ def main():
             ctrate_thresholds = ctrate_metrics['thresholds']
 
             # Print evaluation report
-            print_evaluation_report(ctrate_metrics, CTRATE_CLASS_NAMES, "CT-RATE Validation")
+            print_evaluation_report(ctrate_metrics, CTRATE_CLASS_NAMES, "CT-RATE-huggingface-downloads Validation")
 
             # Save results
             np.savez(
@@ -631,7 +631,7 @@ def main():
                 per_class_f1=np.array(ctrate_metrics['per_class_f1']),
                 per_class_ba=np.array(ctrate_metrics['per_class_ba']),
             )
-            print(f"\nCT-RATE results saved to {output_dir}/ctrate_val_results.npz")
+            print(f"\nCT-RATE-huggingface-downloads results saved to {output_dir}/ctrate_val_results.npz")
 
         # Wait for all processes before proceeding
         accelerator.wait_for_everyone()
@@ -675,7 +675,7 @@ def main():
 
         # Compute metrics and save only on the main process
         if accelerator.is_main_process:
-            # Map CT-RATE 18-class outputs to RAD-ChestCT 16-class space
+            # Map CT-RATE-huggingface-downloads 18-class outputs to RAD-ChestCT 16-class space
             rad_probs = map_ctrate_to_rad(rad_probs_ctrate, CTRATE_CLASS_NAMES, RAD_CLASS_NAMES)
 
             # Reorder RAD-ChestCT labels to match RAD_CLASS_NAMES
@@ -693,7 +693,7 @@ def main():
                 if csv_idx >= 0:
                     rad_labels[:, i] = rad_labels_raw[:, csv_idx]
 
-            # --- Apply CT-RATE thresholds to RAD-ChestCT ---
+            # --- Apply CT-RATE-huggingface-downloads thresholds to RAD-ChestCT ---
             if ctrate_thresholds is not None:
                 rad_thresholds = map_ctrate_thresholds_to_rad(
                     ctrate_thresholds, CTRATE_CLASS_NAMES, RAD_CLASS_NAMES
@@ -703,10 +703,10 @@ def main():
                 )
                 print_evaluation_report(
                     rad_metrics, RAD_CLASS_NAMES, "RAD-ChestCT",
-                    thresholds_source="CT-RATE Validation"
+                    thresholds_source="CT-RATE-huggingface-downloads Validation"
                 )
             else:
-                # No CT-RATE thresholds available (--rad-only mode), optimize on RAD-ChestCT itself
+                # No CT-RATE-huggingface-downloads thresholds available (--rad-only mode), optimize on RAD-ChestCT itself
                 rad_metrics = compute_comprehensive_metrics(
                     rad_probs, rad_labels, RAD_CLASS_NAMES
                 )

@@ -1,0 +1,58 @@
+# =============================================================================
+# ReX Evaluation — LeJEPA-2S (512px native, patch_size=16, timm)
+# =============================================================================
+# HuggingFace: Kentucky-Open-Science/DALE-CT-2S
+# Architecture: ViT-Large with patch_size=16, img_size=512, in_chans=1
+# No register tokens.  Standard 512×512 CT slices need no padding.
+# =============================================================================
+
+data:
+  ct_volumes_dir: "/app/data/CT-RATE-huggingface-downloads/dataset/train_valid"
+  masks_dir: "/app/data/ReXGroundingCT/segmentations"
+  rex_json_path: "/app/data/ReXGroundingCT/MLHC_dataset_version.json"
+  train_metadata_csv: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/UPDATES_CT-RATE/metadata/train_metadata.csv"
+  valid_metadata_csv: "/app/project/ibi-staff/CT-JEPA/Process_CT-RATE/UPDATES_CT-RATE/metadata/validation_metadata.csv"
+  image_size: 256
+  mini_batch_size: 32
+
+  preprocessing:
+    clip_min: -997.0
+    clip_max: 888.0
+    mean_hu: -142.39
+    std_hu: 360.97
+
+model:
+  repo_id: "Kentucky-Open-Science/DALE-CT-2S"
+  embed_dim: 1024
+  num_classes: 14
+  num_register_tokens: 0
+  patch_size: 16
+  native_img_size: 512
+  in_chans: 1
+  backbone_type: "timm"
+
+train:
+  epochs: 3
+  lr: 1e-3
+  weight_decay: 1e-4
+  eval_every_n_epochs: 1
+
+rex_classes:
+  - "1a"
+  - "1b"
+  - "1c"
+  - "1d"
+  - "1e"
+  - "1f"
+  - "2a"
+  - "2b"
+  - "2c"
+  - "2d"
+  - "2e"
+  - "2f"
+  - "2g"
+  - "2h"
+
+output:
+  save_dir: "/app/project/ibi-staff/CT-JEPA/public/outputs/rex_evaluation/lejepa_2s"
+  log_interval: 10

@@ -1,0 +1,209 @@
+# =============================================================================
+# Error Bars — Frozen-Backbone Linear Probe Evaluation (4 models × 3 arms)
+# =============================================================================
+# Adds seed noise (5 seeds of a fixed, val-selected config → mean ± std) and
+# sampling noise (bootstrap test set → 95% CIs, shared indices across models
+# within a task) to the existing COLIPRI linear-probe protocol.
+#
+# Backbones are FROZEN (CLS embeddings precomputed on the DGX). Only the
+# lightweight probes re-run. Arms:
+#   ctrate        — CT-RATE-huggingface-downloads in-domain (18 classes).
+#   rad_retrained — fit a NEW probe on RAD-ChestCT train (16 classes, direct).
+#   rad_frozen    — apply the CT-RATE-huggingface-downloads-trained probe (18→16 mapping) to RAD test.
+#
+# The frozen arm reuses the CT-RATE-huggingface-downloads probes produced by the ctrate variance
+# stage (probes/<model>_ctrate_seed<s>.pth + thresholds). RAD test set is built
+# via dataloader_embeddings (dataset_type: rad_chestct) for BOTH RAD arms so the
+# test set is identical and the v628 frozen 0-volume crash is avoided.
+#
+# Usage (see run_error_bars_array.sh / run_error_bars_master.sh):
+#   python scripts/run_error_bars.py --config configs/error_bars.yaml \
+#       --mode select    --task ctrate        --model dale_ct_0
+#       python scripts/run_error_bars.py ... --mode variance --task ctrate --model dale_ct_0 --seed 0
+#       python scripts/run_error_bars.py ... --mode frozen    --model dale_ct_0 --seed 0
+#       python scripts/run_error_bars.py ... --mode aggregate
+# =============================================================================
+
+# Shared label CSVs (DGX-native paths; mounted into the container at /app/project)
+data:
+  train_label_path: /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/train_predicted_labels.csv
+  val_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/valid_predicted_labels.csv
+  rad_label_path:   /app/project/ibi-staff/CT-JEPA/Process_CT-RATE/dataset/RAD-ChestCT/rad_labels.csv
+  only_global: false
+
+# 4 frozen backbones. Per model, three CLS-embedding dirs in container space
+# (/project → /app/project mount): CT-RATE-huggingface-downloads train, CT-RATE-huggingface-downloads valid, RAD-ChestCT.
+# Embedding format: per-slice CLS (n_slices, 1024) per volume (.npy/.npz).
+models:
+  dale_ct_0:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_base/train_cls
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_base/valid_cls
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_base/cls
+  dale_ct_1s:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_3D_50k_swa_cropped_global/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_3D_50k_swa_cropped_global/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_3D_50k_swa_cropped_global/cls
+  dale_ct_2s:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_v2/train_cls
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate/lejepa_v2/valid_cls
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/lejepa_v2/cls_ctrate_zscore
+  dinov2_finetuned:
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/ctrate/dino_nongated/train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/ctrate/dino_nongated/valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/rad/dinov2_finetuned/cls
+  # visreg_base: vit-base LeJEPA + VISReg, TS-only (v1 — COLLAPSED: backbone [CLS]
+  # cos=1.0, std~0.003; embeddings useless. Kept for provenance; do not run.)
+  # vit-base hidden=768 → per-model input_dim overrides the global 1024.
+  visreg_base:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_embeddings/train/cropped_256
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_embeddings/valid/cropped_256
+    rad:          /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_embeddings/rad/cropped_256
+  # visreg_base_v2: collapse-fixed rerun (VISReg on backbone [CLS] + stop-grad
+  # invariance centroid; defq 8×H100). Same protocol as visreg_base for direct
+  # comparison; vit-base hidden=768.
+  visreg_base_v2:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_v2_embeddings/train/cropped_256
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_v2_embeddings/valid/cropped_256
+    rad:          /app/project/ibi-staff/CT-JEPA/public/outputs/visreg_base_v2_embeddings/rad/cropped_256
+
+
+  # ---- 6 benchmark foundation models (feature-extracted under features/benchmark/).
+  # Heterogeneous embed dims: each carries its own `input_dim`, which
+  # build_config_for_task surfaces to the probe (overriding the global 1024).
+  # The 4 DALE-CT models above have no `input_dim` and fall back to the global.
+  # Native token grids (no pool): 2D = per-slice CLS; 3D = native patch tokens
+  # (COLIPRI/CT-CLIP = 13824, CT-FM = N_patches, Merlin = pooled 1 token).
+  rad_dino:
+    input_dim: 768
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/rad_dino/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/rad_dino/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/rad_dino/rad
+  dinov3:
+    input_dim: 1024
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/dinov3/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/dinov3/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/dinov3/rad
+  colipri:
+    input_dim: 864
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/colipri/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/colipri/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/colipri/rad
+  ct_clip:
+    input_dim: 512
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_clip/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_clip/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_clip/rad
+  merlin:
+    input_dim: 2048
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/merlin/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/merlin/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/merlin/rad
+  ct_fm:
+    input_dim: 512
+    ctrate_train: /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_fm/ctrate_train
+    ctrate_valid: /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_fm/ctrate_valid
+    rad:          /app/project/ibi-staff/CT-JEPA/features/benchmark/ct_fm/rad
+
+experiment:
+  # FIXED split seed for the 1000-patient CT-RATE-huggingface-downloads validation draw — identical
+  # across all 5 training seeds so model selection/thresholds see the same val
+  # split. The 5 training seeds (below) control probe init + DataLoader shuffle
+  # only (ColipriProber has no dropout).
+  split_seed: 42
+  total_steps: 15000
+  eval_freq: 2500
+  batch_size: 16
+  # 0 workers: embeddings are preloaded into RAM (preload_ram=True), so __getitem__
+  # just returns a cached tensor — workers give no speed benefit (training is
+  # GPU-bound) and their /dev/shm tensor-sharing crashes in the container
+  # ("could not unlink the shared memory file"). 0 = no workers, no shared mem.
+  # This also makes the shared val_loader safe to iterate concurrently from the
+  # parallel-LR threads in run_select (each __iter__ gets a fresh iterator).
+  num_workers: 0
+  # Parallel file load + decompress in CTScanMILDataset caching (numpy releases
+  # the GIL during np.load / zlib). 8 cuts the 39-min CT-RATE-huggingface-downloads cache several-fold.
+  num_cache_workers: 8
+  input_dim: 1024
+  # Architecture default for the 18-class CT-RATE-huggingface-downloads probe (also used by the frozen
+  # arm, which loads that probe). The rad_retrained arm overrides this to 16
+  # in-script (len(rad_chestct_classes)) so BCE dims match the 16-col RAD labels.
+  num_classes: 18
+  pooling_mode: "embedding"
+
+  # Stage-1 grid (paper Table 7): 4 LRs × 3 pooling schemes.
+  pooling_schemes:
+    - "average"
+    - "max"
+    - "learned_attention"
+  learning_rates:
+    - 0.3
+    - 0.1
+    - 0.03
+    - 0.01
+    - 0.003
+    - 0.001
+
+  # Stage-2 variance: 5 seeds of the Stage-1-selected (lr, pooling) config.
+  seeds: [0, 1, 2, 3, 4]
+
+  # 18 CT-RATE-huggingface-downloads classes (model output order for ctrate + frozen arms)
+  ct_rate_classes:
+    - "Medical material"
+    - "Arterial wall calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Coronary artery wall calcification"
+    - "Hiatal hernia"
+    - "Lymphadenopathy"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Mosaic attenuation pattern"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+
+  # 16 RAD-ChestCT classes (rad_retrained label cols; frozen-arm eval target)
+  rad_chestct_classes:
+    - "Calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Hiatal hernia"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"
+    - "Lymphadenopathy"
+    - "Medical material"
+
+# Bootstrap sampling noise. Per-task fixed seed → identical resample indices
+# across all models within a task (deterministic from seed + n_test), so CIs are
+# comparable and paired differences remain available later. RAD seed is shared
+# by the frozen + retrained arms (same RAD test set).
+bootstrap:
+  n_resamples: 2000
+  ctrate_seed: 2024
+  rad_seed: 2025
+  ci_percentiles: [2.5, 97.5]
+  sample_round_dp: 6
+
+# Outputs (written incrementally: per-run JSONs as each (model,arm,seed) lands;
+# aggregate last from per-run files).
+output:
+  root: /app/project/ibi-staff/CT-JEPA/public/outputs/error_bars
+  selected_configs: selected_configs
+  per_run: per_run
+  probes: probes
+  aggregate: aggregate
