@@ -24,7 +24,7 @@ model = timm.create_model("hf-hub:Kentucky-Open-Science/DALE-CT-0-L", pretrained
 
 | Model | CT-RATE Macro AUROC | RAD-ChestCT AUROC (frozen / retrained probe) | Role |
 |---|---|---|---|
-| [DALE-CT-0-L](https://huggingface.co/Kentucky-Open-Science/DALE-CT-0-L) ⭐ | 0.8156 | 0.6281 / **0.7572** | **Recommended general-purpose backbone** — best 2D external transfer; supervision-free at ~287k-scan scale |
+| [DALE-CT-0-L](https://huggingface.co/Kentucky-Open-Science/DALE-CT-0-L) ⭐ | 0.8156 | 0.6281 / **0.7572** | **Recommended general-purpose backbone** — best 2D external-transfer point estimates; supervision-free at ~287k-scan scale |
 | [DALE-CT-2S](https://huggingface.co/Kentucky-Open-Science/DALE-CT-2S) | **0.8247** | 0.6252 / 0.7389 | Best in-domain (CT-RATE) |
 | [DALE-CT-1S-v2](https://huggingface.co/Kentucky-Open-Science/DALE-CT-1S-v2) | 0.8098 | 0.6284 / 0.7334 | Anatomical (TotalSegmentator) dense supervision only |
 | [DALE-CT-0](https://huggingface.co/Kentucky-Open-Science/DALE-CT-0) | 0.8057 | 0.5946 / 0.7477 | Pure self-supervised, CT-RATE |
